@@ -71,7 +71,9 @@ class PipelineRunner:
         resume_run_id: str | None = None,
         skip_postmortem: bool = False,
         mode_override: str | None = None,
+        model_override: str | None = None,
     ):
+        self.model_override = model_override
         self.client = anthropic.Anthropic()
         self.feature_request = feature_request
         self.skip_postmortem = skip_postmortem
@@ -331,13 +333,18 @@ class PipelineRunner:
         step_index = list(steps_by_id).index(step_id) + 1
         total = len(steps_by_id)
 
+        model_key = step.get("model", "agent")
+        resolved_model = self.model_override or self.pipeline["models"][model_key]
+        model_label = f"{resolved_model}  [dim](override)[/dim]" if self.model_override else resolved_model
+
         console.print(
             Panel(
                 f"[bold cyan]Run ID:[/bold cyan]    {self.run_id}\n"
                 f"[bold cyan]Step:[/bold cyan]      [{step_index}/{total}] {step['name']}\n"
                 f"[bold cyan]Project:[/bold cyan]   {self.project_name}\n"
                 f"[bold cyan]Workspace:[/bold cyan] {self.workspace}\n"
-                f"[bold cyan]Mode:[/bold cyan]      {self._step_mode(step)}",
+                f"[bold cyan]Mode:[/bold cyan]      {self._step_mode(step)}\n"
+                f"[bold cyan]Model:[/bold cyan]     {model_label}",
                 title="[bold yellow]Single-Step Execution[/bold yellow]",
                 border_style="yellow",
             )
@@ -430,7 +437,7 @@ class PipelineRunner:
 
     def _run_step(self, step: dict) -> dict:
         model_key = step.get("model", "agent")
-        model = self.pipeline["models"][model_key]
+        model = self.model_override or self.pipeline["models"][model_key]
         max_tokens = (
             self.pipeline["execution"]["postmortem_max_tokens"]
             if step.get("is_postmortem")
@@ -863,6 +870,15 @@ def main():
         metavar="RUN_ID",
         help="Target run ID when using --step. Defaults to the most recent run.",
     )
+    parser.add_argument(
+        "--model",
+        metavar="MODEL_ID",
+        help=(
+            "Override the model for this invocation (e.g. claude-opus-4-6, "
+            "claude-haiku-4-5-20251001). Applies to all steps in the run. "
+            "Does not modify pipeline.json."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -912,6 +928,7 @@ def main():
             resume_run_id=run_id,
             skip_postmortem=args.skip_postmortem,
             mode_override=args.mode,
+            model_override=getattr(args, "model", None),
         )
         pipeline_runner.run_single_step(args.step)
         return
@@ -924,6 +941,7 @@ def main():
         resume_run_id=args.resume,
         skip_postmortem=args.skip_postmortem,
         mode_override=args.mode,
+        model_override=getattr(args, "model", None),
     )
     runner.run()
 
