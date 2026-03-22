@@ -76,7 +76,7 @@ Proposals can only write to these locations (enforced by `apply_proposal.py`):
 - `languages.json` — language execution config
 - `skills/` — reusable skill files
 - `README.md` — main documentation
-- `docs/` — documentation folder
+- `docs/self/` — pipeline self-documentation
 
 Absolute paths and `..` traversal are rejected. The pipeline's own logic (`runner.py`, `utils/`) cannot be modified by proposals — only through direct human editing.
 

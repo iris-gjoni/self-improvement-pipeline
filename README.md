@@ -1,6 +1,6 @@
 # Self-Improving Software Development Pipeline
 
-An agentic pipeline that writes software using TDD, verifies requirements, runs integration tests, and then uses AI post-mortem analysis to improve itself over time.
+An agentic pipeline for **creating new projects from scratch** and **maintaining existing projects** — using TDD, requirements verification, and integration tests. After each run, an Opus-powered post-mortem analyses the work and proposes improvements to the pipeline itself.
 
 ## How It Works
 
@@ -43,10 +43,15 @@ Feature Request
 └────────┬────────┘
          │
          ▼
+┌─────────────────┐
+│  8. Doc Update   │  Sonnet creates/updates living docs in docs/projects/{name}/
+└────────┬────────┘
+         │
+         ▼
 ┌─────────────────────────────────────────┐
 │  apply_proposal.py                       │
-│  Human reviews proposals, approves/rejects,│
-│  changes are git-committed + EVOLUTION.md  │
+│  Human reviews proposals, approves/rejects│
+│  Changes committed with [self-improve]    │
 └─────────────────────────────────────────┘
 ```
 
@@ -59,29 +64,53 @@ pip install anthropic rich
 export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-### Run the pipeline
+### New project (build from scratch)
 
 ```bash
-# Basic usage (API mode, Python)
-python runner.py "Add user authentication with JWT tokens"
+# Create a new project — auto-names it from the feature request
+python runner.py "Build a REST API for todo items" --language python
 
-# Specify language
-python runner.py "Build a REST API for todo items" --language typescript
+# Give it an explicit name (used for docs/projects/ folder and registry)
+python runner.py "Build a REST API for todo items" --project-name todo-api
 
+# TypeScript project
+python runner.py "Build a CLI tool for file encryption" --language typescript --project-name file-encryptor
+```
+
+### Existing project (add features or fix bugs)
+
+```bash
+# Point at an existing project — language auto-detected, project auto-registered on first run
+python runner.py "Add password reset flow" --project-dir /path/to/myproject
+
+# Explicit name and language override
+python runner.py "Fix the login race condition" --project-dir /path/to/myproject --project-name my-app --language python
+
+# Subsequent runs on the same project (looked up by name)
+python runner.py "Add email notifications" --project-name my-app
+```
+
+### Project registry
+
+```bash
+# List all known projects
+python runner.py --list-projects
+
+# List all previous runs
+python runner.py --list-runs
+```
+
+### Other options
+
+```bash
 # Use Claude Code CLI for all steps
-python runner.py "Add input validation" --mode claude_code
-
-# Use Claude Code CLI only for specific steps (set in pipeline.json)
-# See docs/execution-modes.md for per-step config
+python runner.py "..." --mode claude_code
 
 # Check Claude Code CLI is available
 python runner.py --check-cli
 
 # Skip post-mortem (faster, no proposals generated)
-python runner.py "Add input validation" --skip-postmortem
-
-# List previous runs
-python runner.py --list-runs
+python runner.py "..." --skip-postmortem
 
 # Resume an interrupted run
 python runner.py --resume 2026-03-22T143000
@@ -237,13 +266,21 @@ Detailed documentation is in `docs/`:
 
 | File | Contents |
 |------|----------|
-| [`docs/architecture.md`](docs/architecture.md) | System design, components, data flow, design decisions |
-| [`docs/pipeline-steps.md`](docs/pipeline-steps.md) | What each step does, inputs/outputs, quality signals, failure modes |
-| [`docs/agent-prompts.md`](docs/agent-prompts.md) | How prompts work, tool sets, template variables, writing guidelines |
-| [`docs/execution-modes.md`](docs/execution-modes.md) | API mode vs Claude Code CLI mode — trade-offs, config, per-step overrides |
-| [`docs/self-improvement.md`](docs/self-improvement.md) | The improvement loop in detail — proposals, apply_proposal.py, git history |
-| [`docs/adding-a-step.md`](docs/adding-a-step.md) | Step-by-step guide to adding a new pipeline step |
-| [`docs/workspace-execution.md`](docs/workspace-execution.md) | Code execution, language support, adding a new language |
+**Pipeline documentation** (`docs/self/`):
+
+| File | Contents |
+|------|----------|
+| [`docs/self/architecture.md`](docs/self/architecture.md) | System design, components, data flow, design decisions |
+| [`docs/self/pipeline-steps.md`](docs/self/pipeline-steps.md) | What each step does, inputs/outputs, quality signals, failure modes |
+| [`docs/self/agent-prompts.md`](docs/self/agent-prompts.md) | How prompts work, tool sets, template variables, writing guidelines |
+| [`docs/self/execution-modes.md`](docs/self/execution-modes.md) | API mode vs Claude Code CLI mode — trade-offs, config, per-step overrides |
+| [`docs/self/self-improvement.md`](docs/self/self-improvement.md) | The improvement loop in detail — proposals, apply_proposal.py, git history |
+| [`docs/self/adding-a-step.md`](docs/self/adding-a-step.md) | Step-by-step guide to adding a new pipeline step |
+| [`docs/self/workspace-execution.md`](docs/self/workspace-execution.md) | Code execution, language support, adding a new language |
+
+**Project documentation** (`docs/projects/`):
+
+Auto-generated and maintained by the pipeline. One subdirectory per project, created on first run and updated on every subsequent run.
 
 ## Models Used
 

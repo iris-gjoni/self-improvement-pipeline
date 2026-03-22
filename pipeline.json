@@ -1,5 +1,5 @@
 {
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Self-improving software development pipeline",
   "models": {
     "agent": "claude-sonnet-4-6",
@@ -11,6 +11,8 @@
     "agent_max_tokens": 8192,
     "postmortem_max_tokens": 16000
   },
+  "docs_repo": "docs",
+  "_docs_repo_comment": "Root of the documentation repository. 'docs/self/' holds pipeline docs; 'docs/projects/' holds per-project docs. Can be an absolute path to a separate docs repo.",
   "execution_mode": "api",
   "_execution_mode_comment": "Global default: 'api' (Anthropic SDK) or 'claude_code' (Claude Code CLI). Override per-step with 'execution_mode' on any step.",
   "claude_code": {
@@ -90,6 +92,17 @@
       "model": "postmortem",
       "writes_code": false,
       "is_postmortem": true,
+      "optional": true
+    },
+    {
+      "id": "doc_update",
+      "name": "Documentation Update",
+      "description": "Create or update the project's living documentation in the docs repository",
+      "agent_prompt": "08_doc_update.md",
+      "model": "agent",
+      "writes_code": true,
+      "doc_workspace": "project_docs",
+      "_doc_workspace_comment": "Tells the runner to use the project's docs folder as the workspace for this step, not the code workspace.",
       "optional": true
     }
   ]

@@ -40,7 +40,8 @@ ALLOWED_PATH_PREFIXES = [
     "skills/",
     "EVOLUTION.md",
     "README.md",
-    "docs/",
+    "docs/self/",   # pipeline self-documentation
+    "docs/",        # also allow bare docs/ for backwards compat
 ]
 
 
