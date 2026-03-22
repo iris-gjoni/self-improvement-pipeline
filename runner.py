@@ -495,6 +495,15 @@ class PipelineRunner:
                     executor=doc_executor,
                     max_tokens=max_tokens,
                 )
+
+                # After doc_update: sync README.md to the project's own directory
+                if step.get("doc_workspace") == "project_docs" and self.workspace != step_ws:
+                    readme_in_docs = step_ws / "README.md"
+                    if readme_in_docs.exists():
+                        readme_in_project = self.workspace / "README.md"
+                        readme_in_project.write_text(readme_in_docs.read_text(encoding="utf-8"), encoding="utf-8")
+                        console.print(f"  [dim]Synced README.md → {readme_in_project}[/dim]")
+
                 return {"status": "success", "output": output}
         else:
             output = runner.run_structured(

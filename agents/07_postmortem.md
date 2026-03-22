@@ -56,6 +56,17 @@ For each agent prompt, ask:
 - Do NOT propose project-specific fixes
 - Focus ONLY on what would make the pipeline work better for the NEXT run on ANY project
 
+### One Exception: Project Documentation Gaps
+
+If a step failed or produced poor results **because project documentation was missing, incomplete, or inaccurate**, you MAY propose a single documentation fix targeting the `docs/projects/{project-name}/` folder. This is the only project-specific change you are allowed to make.
+
+For example:
+- TDD Green failed because the agent didn't understand the project's existing architecture → propose writing or updating `docs/projects/{name}/architecture.md`
+- Requirements were duplicated or contradicted existing behavior → propose updating `docs/projects/{name}/requirements.md` with clarifications
+- The agent made wrong assumptions about setup/dependencies → propose updating `docs/projects/{name}/README.md`
+
+This documentation lives in the pipeline's docs repo, not in the project codebase itself. It helps FUTURE pipeline runs against the same project succeed.
+
 ## Proposal Types
 
 - `update_agent` — Rewrite an agent prompt in `agents/` to fix a systemic issue
@@ -63,6 +74,7 @@ For each agent prompt, ask:
 - `add_step` — Add a new pipeline step (provide agent prompt + pipeline.json changes)
 - `remove_step` — Remove an underperforming step
 - `update_docs` — Update pipeline documentation in `docs/self/` or `README.md`
+- `update_project_docs` — Fix missing/inaccurate project documentation in `docs/projects/{name}/` (see exception above — at most one per post-mortem)
 - `other` — Any other pipeline improvement
 
 ## Proposal Requirements
