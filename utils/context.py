@@ -104,6 +104,7 @@ class ContextBuilder:
             parts.append(self._section("Integration Test Results", "integration"))
             parts.append(self._workspace_structure())
             parts.append(self._pipeline_config())
+            parts.append(self._proposal_history())
 
         elif step_id == "doc_update":
             parts.append(self._section("Requirements Specification", "requirements"))
@@ -113,10 +114,17 @@ class ContextBuilder:
 
         result = "\n".join(p for p in parts if p.strip())
 
-        # Enforce overall token budget
+        # Soft warning if context is very large — but do NOT truncate.
+        # The execution layer handles sizing: Claude Code CLI has native
+        # context compression, and the API supports a 200K token window.
         estimated = estimate_tokens(result)
         if estimated > token_budget:
-            result = self._trim_to_budget(result, token_budget)
+            import logging
+            logging.getLogger(__name__).debug(
+                "Context for step '%s' is ~%d tokens (budget hint: %d). "
+                "Relying on execution layer for compression.",
+                step_id, estimated, token_budget,
+            )
 
         return result
 
@@ -222,7 +230,7 @@ class ContextBuilder:
         if not self.workspace or not self.workspace.exists():
             return ""
 
-        # Collect all eligible files with their sizes
+        # Collect all eligible files
         eligible: list[tuple[Path, int]] = []
         for p in sorted(self.workspace.rglob("*")):
             if not p.is_file() or self._is_ignored(p):
@@ -239,45 +247,78 @@ class ContextBuilder:
         if not eligible:
             return ""
 
-        # Budget: reserve ~40% of total token budget for workspace files.
-        # The rest is for step outputs, headers, etc.
-        workspace_token_budget = int(token_budget * 0.4)
-        workspace_char_budget = int(workspace_token_budget * CHARS_PER_TOKEN)
+        # --- Priority ordering ---
+        # Files referenced in the plan get highest priority, then test files,
+        # then everything else. This ensures the most important files survive
+        # if any downstream context compression occurs.
+        plan_files = self._get_plan_file_paths()
 
-        # Per-file cap: distribute budget, but cap individual files
-        per_file_char_cap = min(6000, max(2000, workspace_char_budget // max(len(eligible), 1)))
+        def _file_priority(item: tuple[Path, int]) -> tuple[int, str]:
+            p, _ = item
+            rel = str(p.relative_to(self.workspace)).replace("\\", "/")
+            if rel in plan_files:
+                return (0, rel)  # highest priority
+            if "test" in rel.lower():
+                return (1, rel)
+            if rel.endswith("__init__.py") or rel.endswith(".lock"):
+                return (3, rel)  # lowest priority
+            return (2, rel)
+
+        eligible.sort(key=_file_priority)
+
+        # Per-file sanity cap: skip obviously huge files (>100KB) to avoid
+        # including generated/binary content. No hard token budget — let the
+        # execution layer (Claude Code CLI context compression, or API's 200K
+        # window) handle overall sizing.
+        MAX_FILE_CHARS = 100_000
 
         parts = ["## Workspace Files\n"]
-        chars_used = 0
         files_included = 0
-        files_skipped = 0
+        files_skipped_large = 0
 
         for p, size in eligible:
             rel = str(p.relative_to(self.workspace)).replace("\\", "/")
 
-            # Check if we're approaching the budget
-            if chars_used > workspace_char_budget:
-                files_skipped += 1
-                continue
-
             try:
                 content = p.read_text(encoding="utf-8", errors="replace")
-                if len(content) > per_file_char_cap:
-                    content = content[:per_file_char_cap] + f"\n... [truncated — {len(content):,} chars total]"
+                if len(content) > MAX_FILE_CHARS:
+                    files_skipped_large += 1
+                    parts.append(
+                        f"### `{rel}`\n\n_[Large file skipped — {len(content):,} chars. "
+                        f"Use `read_file` to view.]_\n"
+                    )
+                    continue
                 file_block = f"### `{rel}`\n\n```\n{content}\n```\n"
-                chars_used += len(file_block)
                 parts.append(file_block)
                 files_included += 1
             except Exception:
                 parts.append(f"### `{rel}`\n\n_[could not read file]_\n")
 
-        if files_skipped > 0:
+        if files_skipped_large > 0:
             parts.append(
-                f"\n_[Context truncated: {files_skipped} file(s) omitted to stay within token budget. "
-                f"Use `read_file` or `list_files` to explore the full workspace.]_\n"
+                f"\n_[{files_skipped_large} large file(s) omitted. "
+                f"Use `read_file` or `list_files` to explore them.]_\n"
             )
 
         return "\n".join(parts)
+
+    def _get_plan_file_paths(self) -> set[str]:
+        """Extract file paths from the plan step output for priority ordering."""
+        plan_data = self.context.get("plan")
+        if not plan_data:
+            return set()
+        output = plan_data.get("output", plan_data)
+        # Unwrap nested output
+        if isinstance(output, dict) and "output" in output and isinstance(output["output"], dict):
+            output = output["output"]
+        file_structure = output.get("file_structure", [])
+        paths = set()
+        for entry in file_structure:
+            if isinstance(entry, dict) and "path" in entry:
+                paths.add(entry["path"])
+            elif isinstance(entry, str):
+                paths.add(entry)
+        return paths
 
     # ------------------------------------------------------------------
     # Project documentation sections
@@ -339,6 +380,79 @@ class ContextBuilder:
         return "\n".join(parts)
 
     # ------------------------------------------------------------------
+    # Proposal history (for post-mortem deduplication)
+    # ------------------------------------------------------------------
+
+    def _proposal_history(self) -> str:
+        """Include a summary of prior proposals so the post-mortem avoids duplicates."""
+        # Resolve proposals dir: walk up from workspace like _pipeline_config does
+        proposals_dir = None
+        search = self.workspace
+        for _ in range(8):
+            candidate = search / "proposals"
+            if candidate.exists() and candidate.is_dir():
+                proposals_dir = candidate
+                break
+            parent = search.parent
+            if parent == search:
+                break
+            search = parent
+
+        if not proposals_dir or not proposals_dir.exists():
+            return ""
+
+        proposal_files = sorted(proposals_dir.glob("*.json"), reverse=True)
+        if not proposal_files:
+            return ""
+
+        parts = [
+            "## Previous Post-mortem Proposals\n",
+            "The following proposals have been generated by prior post-mortem runs. "
+            "Do NOT re-propose changes that have already been **applied**. "
+            "If a prior proposal was **rejected**, only re-propose it if you have a "
+            "substantially different rationale or approach.\n",
+        ]
+
+        # Show at most the 10 most recent proposal files to avoid unbounded growth
+        for pf in proposal_files[:10]:
+            try:
+                data = json.loads(pf.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+
+            run_id = data.get("run_id", pf.stem)
+            status = data.get("status", "pending")
+            proposals = data.get("proposals", [])
+
+            if not proposals:
+                continue
+
+            parts.append(f"### Run `{run_id}` — {status}\n")
+            for prop in proposals:
+                title = prop.get("title", "Untitled")
+                ptype = prop.get("type", "other")
+                priority = prop.get("priority", "?")
+                applied = prop.get("applied", False)
+                rejected = prop.get("rejected", False)
+                rejection_reason = prop.get("rejection_reason", "")
+
+                if applied:
+                    marker = "✅ APPLIED"
+                elif rejected:
+                    marker = f"❌ REJECTED"
+                    if rejection_reason:
+                        marker += f" ({rejection_reason})"
+                else:
+                    marker = "⏳ PENDING"
+
+                parts.append(
+                    f"- **{title}** [{ptype}, {priority}] — {marker}"
+                )
+            parts.append("")
+
+        return "\n".join(parts)
+
+    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
@@ -365,8 +479,25 @@ class ContextBuilder:
 
     @staticmethod
     def _is_ignored(path: Path) -> bool:
-        ignored = {
+        ignored_dirs = {
             "__pycache__", ".pytest_cache", "node_modules",
-            ".mypy_cache", "dist", "build", ".git",
+            ".mypy_cache", "dist", "build", ".git", ".venv",
+            "venv", "env", ".tox", ".eggs", "htmlcov",
+            ".coverage", ".idea", ".vscode",
         }
-        return any(part in ignored for part in path.parts)
+        ignored_extensions = {
+            ".pyc", ".pyo", ".so", ".dylib", ".dll",
+            ".min.js", ".min.css", ".map",
+            ".lock", ".whl", ".egg-info",
+        }
+        ignored_names = {
+            "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+            "poetry.lock", "Pipfile.lock",
+        }
+        if any(part in ignored_dirs for part in path.parts):
+            return True
+        if path.suffix in ignored_extensions:
+            return True
+        if path.name in ignored_names:
+            return True
+        return False

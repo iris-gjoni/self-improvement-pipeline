@@ -29,7 +29,9 @@ Supports two usage modes:
 
 import argparse
 import json
+import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -261,18 +263,43 @@ class PipelineRunner:
             self.logger.log_event("step_start", {"step_id": step_id})
             step_start = datetime.now()
 
-            try:
-                result = self._run_step(step)
-            except KeyboardInterrupt:
-                console.print("\n[yellow]Interrupted. Run state saved — resume with:[/yellow]")
-                console.print(f"  python runner.py --resume {self.run_id} ...")
-                run_meta["status"] = "interrupted"
-                run_meta["context"] = self.context
-                self.logger.save_run_meta(run_meta)
-                sys.exit(0)
-            except Exception as e:
-                console.print_exception()
-                result = {"status": "error", "error": str(e)}
+            step_retries = step.get(
+                "max_retries",
+                self.pipeline["execution"].get("step_max_retries", 2),
+            )
+            result = None
+            for retry in range(step_retries + 1):
+                try:
+                    result = self._run_step(step)
+                    break  # Success — exit retry loop
+                except KeyboardInterrupt:
+                    console.print("\n[yellow]Interrupted. Run state saved — resume with:[/yellow]")
+                    console.print(f"  python runner.py --resume {self.run_id} ...")
+                    run_meta["status"] = "interrupted"
+                    run_meta["context"] = self.context
+                    self.logger.save_run_meta(run_meta)
+                    sys.exit(0)
+                except Exception as e:
+                    if retry < step_retries and self._is_transient_error(e):
+                        wait = 30 * (retry + 1)
+                        console.print(
+                            f"  [yellow]Transient error: {type(e).__name__}: {str(e)[:200]}[/yellow]"
+                        )
+                        console.print(
+                            f"  [yellow]Retrying step in {wait}s "
+                            f"(attempt {retry + 2}/{step_retries + 1})...[/yellow]"
+                        )
+                        self.logger.log_event("step_retry", {
+                            "step_id": step_id,
+                            "attempt": retry + 2,
+                            "error": str(e)[:500],
+                            "error_type": type(e).__name__,
+                        })
+                        time.sleep(wait)
+                    else:
+                        console.print_exception()
+                        result = {"status": "error", "error": str(e)}
+                        break
 
             # Validate step output structure before continuing
             try:
@@ -312,6 +339,13 @@ class PipelineRunner:
                 if not step.get("optional", False):
                     console.print("[red]Non-optional step failed. Stopping pipeline.[/red]")
                     break
+
+            # ----------------------------------------------------------
+            # Verification rework loop (Proposal 2)
+            # If verification found gaps, re-run TDD Green + Verification
+            # ----------------------------------------------------------
+            if step_id == "verification" and status in ("success", "partial"):
+                self._verification_rework_loop(result, run_meta, steps)
 
         run_meta["status"] = "completed"
         run_meta["completed_at"] = datetime.now().isoformat()
@@ -429,6 +463,26 @@ class PipelineRunner:
             reverse=True,
         )
         return candidates[0].name if candidates else None
+
+    @staticmethod
+    def _is_transient_error(exc: Exception) -> bool:
+        """Return True if the exception is a transient/retryable error."""
+        # Anthropic API transient errors
+        if isinstance(exc, anthropic.RateLimitError):
+            return True
+        if isinstance(exc, anthropic.APIStatusError) and exc.status_code in (500, 502, 503, 529):
+            return True
+        if isinstance(exc, anthropic.APIConnectionError):
+            return True
+        # Subprocess / network transient errors
+        if isinstance(exc, (subprocess.TimeoutExpired, ConnectionError, TimeoutError, OSError)):
+            return True
+        # RuntimeError from our own code that wraps transient failures
+        if isinstance(exc, RuntimeError):
+            msg = str(exc).lower()
+            if any(kw in msg for kw in ("rate limit", "overloaded", "timed out", "timeout", "api call failed")):
+                return True
+        return False
 
     # ------------------------------------------------------------------
     # Step dispatch
@@ -562,11 +616,13 @@ class PipelineRunner:
             "max_attempts", self.pipeline["execution"]["tdd_green_max_attempts"]
         )
         is_interactive = isinstance(runner, InteractiveRunner)
+        is_cc = isinstance(runner, ClaudeCodeRunner)
 
         self.executor.install_dependencies()
         test_result = self.executor.run_tests()
         messages = None
         all_files_written: list[str] = []
+        attempt_history: list[dict] = []  # For Claude Code mode retry context
 
         for attempt in range(1, max_attempts + 1):
             console.print(f"  [dim]Attempt {attempt}/{max_attempts}[/dim]")
@@ -591,6 +647,9 @@ class PipelineRunner:
             stateful_kwargs: dict = {}
             if is_interactive:
                 stateful_kwargs["step_id_hint"] = step["id"]
+            # Claude Code mode: pass attempt history for retry context
+            if is_cc:
+                stateful_kwargs["attempt_history"] = attempt_history
 
             output, messages = runner.run_with_files_stateful(
                 system_prompt=system_prompt,
@@ -635,6 +694,13 @@ class PipelineRunner:
                     "type_result": type_result,
                     "files_written": list(set(all_files_written)),
                 }
+
+            # Record this attempt for Claude Code retry context
+            attempt_history.append({
+                "attempt": attempt,
+                "files_written": output.get("files_written", []),
+                "test_summary": test_result.get("formatted_output", "")[-2000:],
+            })
 
             # In interactive mode, pause and let the user decide whether to retry
             if is_interactive and attempt < max_attempts:
@@ -753,6 +819,174 @@ class PipelineRunner:
             "proposal_path": str(proposal_path),
             "proposal_count": n,
         }
+
+    # ------------------------------------------------------------------
+    # Verification Rework Loop
+    # ------------------------------------------------------------------
+
+    def _verification_rework_loop(self, verification_result: dict, run_meta: dict, steps: list) -> None:
+        """
+        If verification found failing/partial criteria and rework is enabled,
+        re-run TDD Green (targeting the gaps) and then re-run Verification.
+        """
+        rework_enabled = self.pipeline["execution"].get("verification_rework_enabled", False)
+        max_rework = self.pipeline["execution"].get("verification_rework_max_attempts", 2)
+
+        if not rework_enabled or max_rework < 1:
+            return
+
+        # Extract verification status
+        output = verification_result.get("output", verification_result)
+        if isinstance(output, dict) and "output" in output and isinstance(output["output"], dict):
+            output = output["output"]
+        overall_status = output.get("overall_status", "pass")
+
+        if overall_status == "pass":
+            return  # All good, no rework needed
+
+        criteria_results = output.get("criteria_results", [])
+        failing_criteria = [
+            cr for cr in criteria_results
+            if cr.get("status") in ("fail", "partial")
+        ]
+
+        if not failing_criteria:
+            return
+
+        tdd_green_step = next((s for s in steps if s["id"] == "tdd_green"), None)
+        verification_step = next((s for s in steps if s["id"] == "verification"), None)
+
+        if not tdd_green_step or not verification_step:
+            return
+
+        for rework_attempt in range(1, max_rework + 1):
+            console.print(
+                f"\n[bold yellow]Verification Rework {rework_attempt}/{max_rework}[/bold yellow]"
+            )
+
+            # Build gap report for the TDD Green agent
+            gap_lines = [f"## Verification Gaps (Rework Attempt {rework_attempt}/{max_rework})\n"]
+            gap_lines.append(
+                "The verification step found the following acceptance criteria are NOT fully satisfied. "
+                "Fix the implementation to address these gaps. Do NOT modify test files.\n"
+            )
+            for cr in failing_criteria:
+                cr_id = cr.get("id", "?")
+                cr_status = cr.get("status", "?")
+                gaps = cr.get("gaps", "")
+                evidence = cr.get("evidence", "")
+                gap_lines.append(f"### {cr_id} — {cr_status}")
+                if gaps:
+                    gap_lines.append(f"**Gaps:** {gaps}")
+                if evidence:
+                    gap_lines.append(f"**Evidence:** {evidence}")
+                gap_lines.append("")
+            gap_report = "\n".join(gap_lines)
+
+            self.logger.log_event("verification_rework_start", {
+                "attempt": rework_attempt,
+                "failing_criteria": [cr.get("id") for cr in failing_criteria],
+            })
+
+            # Re-run TDD Green with the gap report as context
+            model_key = tdd_green_step.get("model", "agent")
+            model = self.model_override or self.pipeline["models"][model_key]
+            max_tokens = self.pipeline["execution"]["agent_max_tokens"]
+            system_prompt = self._load_agent_prompt(tdd_green_step)
+            user_message = self._build_context_message(tdd_green_step)
+            runner = self._runner(tdd_green_step)
+
+            console.print("  [dim]Re-running TDD Green to fix verification gaps...[/dim]")
+
+            # Run with gap report appended
+            augmented_message = user_message + "\n\n" + gap_report
+            test_result = self.executor.run_tests()
+            augmented_message += (
+                f"\n\n## Current Test Output\n\n```\n{test_result['formatted_output']}\n```"
+            )
+
+            output_result, _ = runner.run_with_files_stateful(
+                system_prompt=system_prompt,
+                user_message=augmented_message,
+                retry_message=None,
+                messages=None,
+                model=model,
+                workspace=self.workspace,
+                executor=self.executor,
+                can_run_tests=True,
+                max_tokens=max_tokens,
+            )
+
+            self.executor.install_dependencies()
+            test_result = self.executor.run_tests()
+            console.print(
+                f"  [dim]Tests after rework: {test_result['passed_count']}/{test_result['total']} passed[/dim]"
+            )
+
+            # Update TDD Green context with rework info
+            if "verification_rework" not in self.context:
+                self.context["verification_rework"] = []
+            self.context["verification_rework"].append({
+                "attempt": rework_attempt,
+                "files_written": output_result.get("files_written", []),
+                "test_result": test_result,
+            })
+
+            # Re-run Verification
+            console.print("  [dim]Re-running Verification...[/dim]")
+            v_system_prompt = self._load_agent_prompt(verification_step)
+            v_user_message = self._build_context_message(verification_step)
+            v_runner = self._runner(verification_step)
+            v_model_key = verification_step.get("model", "agent")
+            v_model = self.model_override or self.pipeline["models"][v_model_key]
+
+            v_result = v_runner.run_structured(
+                system_prompt=v_system_prompt,
+                user_message=v_user_message,
+                model=v_model,
+                schema=None,
+                step_id="verification",
+                max_tokens=max_tokens,
+            )
+            v_full_result = {"status": "success", "output": v_result}
+
+            # Update verification context
+            self.context["verification"] = v_full_result
+            run_meta["context"] = self.context
+            self.logger.save_run_meta(run_meta)
+            self.logger.save_step("verification", v_full_result)
+
+            # Check if rework resolved the gaps
+            v_output = v_result
+            if isinstance(v_output, dict) and "output" in v_output:
+                v_output = v_output["output"]
+            new_overall = v_output.get("overall_status", "pass")
+            new_criteria = v_output.get("criteria_results", [])
+            new_failing = [cr for cr in new_criteria if cr.get("status") in ("fail", "partial")]
+
+            self.logger.log_event("verification_rework_complete", {
+                "attempt": rework_attempt,
+                "overall_status": new_overall,
+                "remaining_gaps": len(new_failing),
+            })
+
+            if new_overall == "pass" or not new_failing:
+                console.print(
+                    f"  [green]OK Verification rework resolved all gaps "
+                    f"(attempt {rework_attempt})[/green]"
+                )
+                return
+
+            console.print(
+                f"  [yellow]Rework attempt {rework_attempt}: "
+                f"{len(new_failing)} criteria still failing[/yellow]"
+            )
+            failing_criteria = new_failing  # Update for next iteration
+
+        console.print(
+            f"  [yellow]Verification rework exhausted ({max_rework} attempts). "
+            f"Continuing with remaining gaps.[/yellow]"
+        )
 
     # ------------------------------------------------------------------
     # Helpers

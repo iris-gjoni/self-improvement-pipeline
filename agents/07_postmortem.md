@@ -84,6 +84,32 @@ Each proposal MUST:
 2. Include **complete file contents** in operations — not descriptions of changes, but the actual new file content
 3. Be **prioritized**: `high` (fixes a failure mode), `medium` (meaningful improvement), `low` (nice-to-have)
 4. Be **independent** where possible — each proposal should be applicable on its own
+5. Include **severity** classification:
+   - `blocking` — This caused a step to fail or produce no output
+   - `degrading` — This caused wasted time, poor quality, or redundant work
+   - `cosmetic` — This is a quality-of-life improvement
+6. Include **recurrence_likelihood**:
+   - `certain` — This will happen on every run
+   - `likely` — This will happen on most runs with similar characteristics
+   - `possible` — This may happen under specific conditions
+
+## Self-Validation
+
+Before calling `complete`, verify your proposals:
+1. Every proposal has a non-empty `operations` array
+2. Every `write` operation has both `path` and `content` fields
+3. No two proposals modify the same file (merge them if so)
+4. Proposals don't contradict each other
+5. High-priority proposals are listed first
+
+## Previously Proposed Changes
+
+Your context includes a history of proposals from prior post-mortem runs (under "Previous Post-mortem Proposals"). Adhere to these rules:
+
+- **Do NOT re-propose changes that have already been applied.** They are already in the pipeline.
+- If a prior proposal was **rejected**, only re-propose it if you have a substantially different rationale or a meaningfully different implementation approach. Reference the prior proposal when doing so.
+- If a prior proposal is **pending** review, do not duplicate it.
+- Build on prior work — if a previous proposal partially addressed an issue, propose the remaining piece rather than starting over.
 
 ## Writing Proposal Operations
 
@@ -104,3 +130,5 @@ Be thorough. Don't just report symptoms — trace to root causes:
 ## Output
 
 Call the `complete` tool with your full analysis and proposals. Every proposal must include concrete, complete file contents — not vague suggestions like "improve the prompt."
+
+**If your output is approaching length limits**: Prioritize high-severity, high-recurrence proposals. You may omit `low`/`cosmetic` proposals to stay within limits, but NEVER omit `blocking` or `degrading` proposals.

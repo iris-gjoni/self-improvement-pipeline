@@ -3,7 +3,6 @@
 import re
 import subprocess
 from pathlib import Path
-from typing import Any
 
 
 class WorkspaceExecutor:
@@ -103,6 +102,25 @@ class WorkspaceExecutor:
             raise ValueError(f"Path '{path}' is outside the workspace.")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
+
+    def edit_workspace_file(self, path: str, old_text: str, new_text: str) -> None:
+        """Replace a specific text span in an existing file. Raises if old_text is not found."""
+        target = (self.workspace / path).resolve()
+        try:
+            target.relative_to(self.workspace.resolve())
+        except ValueError:
+            raise ValueError(f"Path '{path}' is outside the workspace.")
+        if not target.exists():
+            raise FileNotFoundError(f"File not found: {path}")
+        content = target.read_text(encoding="utf-8", errors="replace")
+        if old_text not in content:
+            raise ValueError(
+                f"old_text not found in {path}. "
+                f"Make sure the text matches exactly (including whitespace and newlines)."
+            )
+        # Replace first occurrence only
+        new_content = content.replace(old_text, new_text, 1)
+        target.write_text(new_content, encoding="utf-8")
 
     # ------------------------------------------------------------------
     # Internal helpers

@@ -74,28 +74,37 @@ class TestContextBuilding:
 
 
 class TestTokenBudget:
-    def test_large_files_are_truncated(self, workspace):
-        """Files larger than the per-file limit should be truncated."""
+    def test_large_files_included_in_full(self, workspace):
+        """Files under 100KB should be included without truncation."""
         large_file = workspace / "src" / "big.py"
         large_file.write_text("x = 1\n" * 5000)  # ~30KB
         builder = make_builder(workspace)
         step = {"id": "tdd_green"}
         ctx = builder.build_for_step(step)
-        # The file should appear but be truncated
+        # The file should appear in full (no hard truncation)
         assert "big.py" in ctx
-        assert "truncated" in ctx
+        assert "x = 1" in ctx
 
-    def test_context_respects_max_tokens(self, workspace):
-        """When a token budget is set, the context should be bounded."""
-        # Create a bunch of files
-        for i in range(50):
-            (workspace / "src" / f"module_{i}.py").write_text(f"# module {i}\n" * 200)
+    def test_very_large_files_skipped(self, workspace):
+        """Files over 100KB should be skipped with a notice."""
+        huge_file = workspace / "src" / "huge.py"
+        huge_file.write_text("x = 1\n" * 20000)  # ~120KB
         builder = make_builder(workspace)
         step = {"id": "tdd_green"}
-        ctx = builder.build_for_step(step, max_context_tokens=8000)
-        # Rough estimate: 8000 tokens ~ 32000 chars. Context should be bounded.
-        assert len(ctx) < 50000  # generous upper bound
-        assert "[context truncated" in ctx.lower() or len(ctx) < 40000
+        ctx = builder.build_for_step(step)
+        assert "huge.py" in ctx
+        assert "Large file skipped" in ctx
+
+    def test_context_includes_all_workspace_files(self, workspace):
+        """All reasonably-sized workspace files should be included."""
+        for i in range(10):
+            (workspace / "src" / f"module_{i}.py").write_text(f"# module {i}\n" * 50)
+        builder = make_builder(workspace)
+        step = {"id": "tdd_green"}
+        ctx = builder.build_for_step(step)
+        # All 10 modules should be present
+        for i in range(10):
+            assert f"module_{i}.py" in ctx
 
 
 class TestIgnoredPaths:

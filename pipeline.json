@@ -1,5 +1,5 @@
 {
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Self-improving software development pipeline",
   "models": {
     "agent": "claude-sonnet-4-6",
@@ -9,7 +9,11 @@
     "max_iterations_per_agent": 50,
     "tdd_green_max_attempts": 5,
     "agent_max_tokens": 8192,
-    "postmortem_max_tokens": 16000
+    "postmortem_max_tokens": 16000,
+    "verification_rework_enabled": true,
+    "verification_rework_max_attempts": 2,
+    "step_max_retries": 2,
+    "_step_max_retries_comment": "Max retries for transient errors (API 5xx, timeouts) per step. Does not apply to TDD Green which has its own retry loop."
   },
   "docs_repo": "docs",
   "_docs_repo_comment": "Root of the documentation repository. 'docs/self/' holds pipeline docs; 'docs/projects/' holds per-project docs. Can be an absolute path to a separate docs repo.",
@@ -70,8 +74,11 @@
       "name": "Requirements Verification",
       "description": "Verify that every acceptance criterion is genuinely satisfied by the implementation",
       "agent_prompt": "05_verification.md",
-      "model": "agent",
+      "model": "postmortem",
+      "_model_comment": "Uses Opus for verification — this is the critical quality gate and benefits from stronger reasoning",
       "writes_code": false,
+      "requires_output": true,
+      "_requires_output_comment": "Fail this step if the agent produces empty or missing output. Verification is a critical quality gate.",
       "optional": false
     },
     {

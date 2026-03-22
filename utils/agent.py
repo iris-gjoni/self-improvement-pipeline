@@ -48,6 +48,24 @@ FILE_TOOLS = [
         },
     },
     {
+        "name": "edit_file",
+        "description": (
+            "Make a surgical edit to an existing file by replacing a specific text span. "
+            "Provide the exact text to find and the text to replace it with. "
+            "Use this instead of write_file when you only need to change part of a file — "
+            "it is faster and less error-prone than rewriting the whole file."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Relative path within workspace"},
+                "old_text": {"type": "string", "description": "Exact text to find in the file (must match exactly, including whitespace)"},
+                "new_text": {"type": "string", "description": "Text to replace old_text with"},
+            },
+            "required": ["path", "old_text", "new_text"],
+        },
+    },
+    {
         "name": "read_file",
         "description": "Read an existing file from the workspace.",
         "input_schema": {
@@ -383,6 +401,23 @@ class AgentRunner:
                     files_written.append(path)
                 console.print(f"    [dim]  wrote {path}[/dim]")
                 return {"success": True, "path": path}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+
+        if name == "edit_file" and workspace:
+            path = inputs["path"]
+            old_text = inputs["old_text"]
+            new_text = inputs["new_text"]
+            try:
+                executor.edit_workspace_file(path, old_text, new_text)
+                if path not in files_written:
+                    files_written.append(path)
+                console.print(f"    [dim]  edited {path}[/dim]")
+                return {"success": True, "path": path}
+            except FileNotFoundError:
+                return {"success": False, "error": f"File not found: {path}"}
+            except ValueError as e:
+                return {"success": False, "error": str(e)}
             except Exception as e:
                 return {"success": False, "error": str(e)}
 

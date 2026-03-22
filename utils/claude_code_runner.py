@@ -197,10 +197,15 @@ class ClaudeCodeRunner:
         executor,
         can_run_tests: bool = False,
         max_tokens: int = 8192,
+        attempt_history: list | None = None,
     ) -> tuple[dict, list]:
         """
         Run an agent with files. For retries, the test output is concatenated
         into the prompt so Claude Code has full context in a single invocation.
+
+        attempt_history is a list of dicts from prior attempts. Each entry has:
+          {"attempt": N, "files_written": [...], "test_summary": "..."}
+        This gives the model memory of what was already tried.
 
         Returns (result_dict, []) — empty messages list (no state to preserve).
         """
@@ -211,6 +216,28 @@ class ClaudeCodeRunner:
         combined_user = user_message or ""
         if retry_message:
             combined_user = (combined_user + "\n\n" + retry_message).strip()
+
+        # Inject attempt history so the model knows what was already tried
+        if attempt_history:
+            history_lines = ["## Previous Attempts\n"]
+            history_lines.append(
+                "The following attempts have already been made. "
+                "Do NOT repeat the same approach if it failed. "
+                "Focus on fixing the root cause.\n"
+            )
+            for entry in attempt_history:
+                attempt_num = entry.get("attempt", "?")
+                files = entry.get("files_written", [])
+                summary = entry.get("test_summary", "")
+                history_lines.append(f"### Attempt {attempt_num}")
+                if files:
+                    history_lines.append(f"Files written: {', '.join(files)}")
+                if summary:
+                    # Limit summary to avoid bloating the prompt
+                    truncated = summary[-1500:] if len(summary) > 1500 else summary
+                    history_lines.append(f"Test result:\n```\n{truncated}\n```")
+                history_lines.append("")
+            combined_user = combined_user + "\n\n" + "\n".join(history_lines)
 
         full_prompt = self._combine(augmented_system, combined_user)
         snapshot = WorkspaceSnapshot(workspace)

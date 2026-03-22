@@ -31,13 +31,14 @@ Transforms a free-form feature request into a structured specification with test
 ```
 
 ### Quality signals
-- **Good:** 6–15 acceptance criteria covering happy paths, errors, and edge cases; each criterion includes "Given/When/Then" phrasing; NFRs are specific and measurable
-- **Weak:** Vague criteria like "the system should be secure"; missing error conditions; no boundary values
+- **Good:** 6–15 acceptance criteria covering happy paths, errors, and edge cases; each criterion includes "Given/When/Then" phrasing; NFRs are specific and measurable; each AC has a `verification_type` field (`unit`/`integration`/`visual`/`manual`); UI features have logic and visual ACs separated
+- **Weak:** Vague criteria like "the system should be secure"; missing error conditions; no boundary values; mixing testable logic with untestable visual assertions in a single AC
 
 ### Common failure modes
 - AC is too vague to write a test for → post-mortem should update the requirements prompt
 - Too few ACs (missing edge cases) → verifier will find gaps later
 - Conflicting ACs → plan agent may produce an incoherent architecture
+- Visual/UI ACs not separated from logic ACs → TDD agent writes impossible-to-verify tests
 
 ---
 
@@ -73,13 +74,14 @@ Designs the software architecture: file structure, class/function interfaces (no
 ```
 
 ### Quality signals
-- **Good:** Complete file listing (no surprises for TDD agent); interface signatures match AC requirements; test strategy maps to the AC list
-- **Weak:** Vague file structure; missing `__init__.py` files; interfaces not specific enough for TDD agent to write meaningful tests
+- **Good:** Complete file listing (no surprises for TDD agent); interface signatures match AC requirements; test strategy maps to the AC list; includes AC traceability matrix; complexity estimate matches actual scope; NO integration test files in file_structure
+- **Weak:** Vague file structure; missing `__init__.py` files; interfaces not specific enough for TDD agent to write meaningful tests; integration test files listed in file_structure (causes TDD Red to write them prematurely)
 
 ### Common failure modes
 - Plan doesn't match requirements → TDD agent writes tests for the wrong things
 - Missing files in structure → TDD agent writes imports that don't match
 - Overly complex architecture → TDD Green takes many retries
+- Integration test files in file_structure → TDD Red writes them, making the integration step redundant
 
 ---
 
@@ -105,13 +107,14 @@ Writes comprehensive failing tests that cover every acceptance criterion. Tests 
 After writing, the runner verifies that tests *fail* (as expected — the implementation doesn't exist yet).
 
 ### Quality signals
-- **Good:** One test per AC, plus error/edge case tests; descriptive names (`test_ac001_login_with_valid_credentials_returns_jwt`); imports match the plan's file structure exactly
-- **Weak:** `assert True` tests; tests that only cover the happy path; tests that happen to pass because of poor assertions
+- **Good:** One test per AC, plus error/edge case tests; descriptive names (`test_ac001_login_with_valid_credentials_returns_jwt`); imports match the plan's file structure exactly; traceability headers at top of each test file; ONLY files in `tests/unit/`; skips `visual`/`manual` ACs
+- **Weak:** `assert True` tests; tests that only cover the happy path; tests that happen to pass because of poor assertions; tests written in `tests/integration/` (wrong scope)
 
 ### Common failure modes
 - Tests use wrong import paths → `ModuleNotFoundError` in TDD Green (acceptable — means the plan was followed)
 - Tests are too weak → pass even with broken implementation
 - Tests are overly specific to an implementation detail → hard to pass correctly
+- Integration tests written here instead of in the integration step → makes step 6 redundant
 
 ---
 
@@ -144,8 +147,8 @@ After each attempt, the runner:
 If all tests pass → success. Otherwise → retry with test failure output appended.
 
 ### Quality signals
-- **Good:** Passes in 1–2 attempts; production-quality code; handles all edge cases
-- **Weak:** Requires 4–5 attempts; uses hacky special-casing to pass tests; ignores non-functional requirements
+- **Good:** Passes in 1–2 attempts; production-quality code; handles all edge cases; sets up dev dependencies (mypy, pytest) before implementation; implements incrementally with frequent test runs
+- **Weak:** Requires 4–5 attempts; uses hacky special-casing to pass tests; ignores non-functional requirements; type checker silently fails due to missing mypy
 
 ### Common failure modes
 - Agent modifies test files instead of implementation (caught by verifier)
@@ -161,11 +164,11 @@ If all tests pass → success. Otherwise → retry with test failure output appe
 ## Step 5 — Requirements Verification
 
 **Agent:** `agents/05_verification.md`
-**Model:** Sonnet
-**Mode:** Structured output (reads workspace files, no writing)
+**Model:** Opus (upgraded — this is the critical quality gate)
+**Mode:** Structured output (reads workspace files, no writing — except fallback `_verification_report.json`)
 
 ### What it does
-Independently verifies that every acceptance criterion from Step 1 is genuinely satisfied by the implementation. Tests passing is a necessary but not sufficient condition.
+Independently verifies that every acceptance criterion from Step 1 is genuinely satisfied by the implementation. Tests passing is a necessary but not sufficient condition. The agent MUST read source code and test files before producing its report — rubber-stamping based on test results alone is not permitted.
 
 ### Input
 - Requirements (Step 1)
@@ -188,13 +191,14 @@ Independently verifies that every acceptance criterion from Step 1 is genuinely 
 ```
 
 ### Quality signals
-- **Good:** Cites specific code locations; distinguishes between tests that pass trivially vs genuinely verify behaviour; identifies security/edge case gaps
-- **Weak:** Just mirrors the test results; doesn't read the actual code
+- **Good:** Cites specific code locations; distinguishes between tests that pass trivially vs genuinely verify behaviour; identifies security/edge case gaps; assigns confidence scores per AC; verifies NFRs; reads source files before reporting
+- **Weak:** Just mirrors the test results; doesn't read the actual code; produces empty output (now caught by `requires_output` flag); skips NFR verification
 
 ### Common failure modes
 - Marks AC as "pass" because a test exists, without checking if the test is meaningful
 - Misses NFRs (non-functional requirements) entirely
 - Does not check error handling paths
+- Produces empty output in claude_code interactive mode → now has file fallback (`_verification_report.json`)
 
 ---
 
@@ -206,7 +210,7 @@ Independently verifies that every acceptance criterion from Step 1 is genuinely 
 **Optional:** Yes (pipeline continues even if this step fails)
 
 ### What it does
-Writes end-to-end integration tests that exercise the system from its entry point, testing complete user journeys rather than isolated units. Then executes them.
+Writes end-to-end integration tests that exercise the system from its entry point, testing complete user journeys rather than isolated units. Then executes them. **Crucially, first checks for existing integration tests** and only writes new tests for uncovered scenarios — may complete with zero new files if coverage is already sufficient.
 
 ### Input
 - All prior context
@@ -217,8 +221,8 @@ Writes end-to-end integration tests that exercise the system from its entry poin
 - `integration.json` contains integration test results and any bugs found
 
 ### Quality signals
-- **Good:** Tests full workflows (not mocked); sets up and tears down state; tests error recovery
-- **Weak:** Essentially duplicates unit tests; mocks the components being integrated
+- **Good:** Tests full workflows (not mocked); sets up and tears down state; tests error recovery; checks for existing tests first and only writes what's missing; exercises 2+ components per test
+- **Weak:** Essentially duplicates unit tests; mocks the components being integrated; writes 0 new files after spending 200+ seconds (should complete early if nothing to add)
 
 ### Common failure modes
 - Setup/teardown issues (database not cleaned between tests)
@@ -246,7 +250,7 @@ Analyses the complete pipeline run — quality of each step's output, process fa
 - Saved to `proposals/{run_id}.json` (not `postmortem.json`)
 - Contains: analysis, run_summary (quality + key issues/successes), proposals[]
 
-Each proposal has: type, title, rationale, priority (high/medium/low), and operations (file writes/deletes).
+Each proposal has: type, title, rationale, priority (high/medium/low), severity (blocking/degrading/cosmetic), recurrence_likelihood (certain/likely/possible), and operations (file writes/deletes). The agent self-validates proposals before submitting (no empty operations, no file conflicts, no contradictions).
 
 ### Quality signals
 - **Good:** Traces root causes rather than symptoms; provides complete file contents in operations, not just descriptions; proposals are ranked by impact

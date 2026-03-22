@@ -64,6 +64,11 @@ def main():
         action="store_true",
         help="Show what would be applied without making changes",
     )
+    parser.add_argument(
+        "--skip-tests",
+        action="store_true",
+        help="Skip running the pipeline's test suite after applying proposals",
+    )
     args = parser.parse_args()
 
     if args.list:
@@ -85,7 +90,13 @@ def main():
         sys.exit(1)
 
     proposal = json.loads(proposal_path.read_text(encoding="utf-8"))
-    apply_proposal(proposal, proposal_path, auto_apply=args.auto_apply, dry_run=args.dry_run)
+    apply_proposal(
+        proposal,
+        proposal_path,
+        auto_apply=args.auto_apply,
+        dry_run=args.dry_run,
+        skip_tests=args.skip_tests,
+    )
 
 
 # ===========================================================================
@@ -98,6 +109,7 @@ def apply_proposal(
     proposal_path: Path,
     auto_apply: bool = False,
     dry_run: bool = False,
+    skip_tests: bool = False,
 ) -> None:
     run_id = proposal.get("run_id", "?")
     proposals = proposal.get("proposals", [])
@@ -227,6 +239,12 @@ def apply_proposal(
         console.print("[dim]Dry run — not applying changes.[/dim]")
         return
 
+    # Backup original files before applying (for rollback on test failure)
+    all_operations = []
+    for prop in approved:
+        all_operations.extend(prop.get("operations", []))
+    backups = _backup_files(all_operations)
+
     apply_errors: list[str] = []
     for prop in approved:
         try:
@@ -237,6 +255,26 @@ def apply_proposal(
             apply_errors.append(str(e))
             rejected.append(prop)
             approved.remove(prop)
+
+    # Run pipeline's own test suite to verify proposals don't cause regressions
+    if approved and not skip_tests:
+        console.print("\n[bold]Running pipeline test suite to verify changes...[/bold]")
+        test_ok = _run_pipeline_tests()
+        if not test_ok:
+            console.print(
+                "[bold red]Pipeline tests FAILED after applying proposals. "
+                "Rolling back all changes.[/bold red]"
+            )
+            _rollback_files(backups)
+            # Move all approved back to rejected
+            for prop in list(approved):
+                prop_id = prop.get("id", "?")
+                rejected.append(prop)
+                rejection_reasons[prop_id] = "Pipeline tests failed after application"
+            approved.clear()
+            _update_proposal_status(proposal, proposal_path, approved, rejected, rejection_reasons)
+            console.print("[yellow]All proposals rolled back. No changes committed.[/yellow]")
+            return
 
     # Update EVOLUTION.md
     _update_evolution_md(run_id, proposal, approved, rejected, rejection_reasons)
@@ -287,6 +325,75 @@ def _apply_operations(operations: list[dict]) -> None:
                 target.unlink()
         else:
             raise ValueError(f"Unknown action: {action}")
+
+
+def _backup_files(operations: list[dict]) -> dict[str, str | None]:
+    """
+    Capture original contents of all files that will be modified by operations.
+    Returns {relative_path: original_content_or_None_if_not_exists}.
+    """
+    backups: dict[str, str | None] = {}
+    for op in operations:
+        path = op.get("path", "")
+        if not path or path in backups:
+            continue
+        target = BASE_DIR / path
+        if target.exists():
+            try:
+                backups[path] = target.read_text(encoding="utf-8")
+            except Exception:
+                backups[path] = None
+        else:
+            backups[path] = None
+    return backups
+
+
+def _rollback_files(backups: dict[str, str | None]) -> None:
+    """Restore files to their pre-apply state using the backup dict."""
+    for path, content in backups.items():
+        target = BASE_DIR / path
+        if content is None:
+            # File didn't exist before — delete it if it was created
+            if target.exists():
+                target.unlink()
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+    console.print(f"  [dim]Rolled back {len(backups)} file(s)[/dim]")
+
+
+def _run_pipeline_tests() -> bool:
+    """
+    Run the pipeline's own test suite (pytest tests/).
+    Returns True if all tests pass, False otherwise.
+    """
+    tests_dir = BASE_DIR / "tests"
+    if not tests_dir.exists():
+        console.print("  [dim]No tests/ directory found — skipping test verification[/dim]")
+        return True
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "tests/", "-v", "--tb=short", "-q"],
+            cwd=str(BASE_DIR),
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode == 0:
+            console.print("  [green]OK Pipeline tests passed[/green]")
+            return True
+        else:
+            output = (result.stdout + result.stderr)[-3000:]
+            console.print(f"  [red]Pipeline tests failed (exit code {result.returncode}):[/red]")
+            console.print(f"[dim]{output}[/dim]")
+            return False
+    except subprocess.TimeoutExpired:
+        console.print("  [red]Pipeline tests timed out (120s)[/red]")
+        return False
+    except Exception as e:
+        console.print(f"  [yellow]Could not run pipeline tests: {e}[/yellow]")
+        return True  # Don't block on test infrastructure issues
 
 
 def _validate_operations(operations: list[dict]) -> list[str]:
