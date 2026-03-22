@@ -13,8 +13,13 @@ dist/
 build/
 *.js.map
 
-# Run artifacts (workspace code is generated, not tracked)
+# Run artifacts (generated output, not source)
 runs/*/workspace/
+runs/*/_task_*.md
+runs/*/_step_output.json
+
+# Claude Code session data
+.claude/
 
 # Environment
 .env

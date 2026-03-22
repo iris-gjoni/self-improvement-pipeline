@@ -133,7 +133,7 @@ def run_postmortem(run_id: str) -> str:
 
     n = len(proposal.get("proposals", []))
     quality = proposal.get("run_summary", {}).get("overall_quality", "?")
-    console.print(f"\n[green]✓ Post-mortem complete[/green]")
+    console.print(f"\n[green]OK Post-mortem complete[/green]")
     console.print(f"  Overall quality: [bold]{quality}[/bold]")
     console.print(f"  Proposals generated: [bold]{n}[/bold]")
     console.print(f"\n  Review proposals:\n    [cyan]python apply_proposal.py {proposal_path}[/cyan]")

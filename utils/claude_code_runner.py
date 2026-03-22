@@ -267,7 +267,7 @@ class ClaudeCodeRunner:
             "--model", model,
         ]
 
-        console.print(f"    [dim]  → claude CLI ({tools})[/dim]")
+        console.print(f"    [dim]  -> claude CLI ({tools})[/dim]")
 
         try:
             proc = subprocess.run(

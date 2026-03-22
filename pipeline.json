@@ -2,8 +2,8 @@
   "version": "1.2.0",
   "description": "Self-improving software development pipeline",
   "models": {
-    "agent": "claude-sonnet-4-6",
-    "postmortem": "claude-opus-4-6"
+    "agent": "claude-haiku-4-5-20251001",
+    "postmortem": "claude-haiku-4-5-20251001"
   },
   "execution": {
     "max_iterations_per_agent": 50,

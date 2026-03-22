@@ -13,12 +13,18 @@ Supports two usage modes:
     python runner.py "Fix the login bug" --project-dir /path/to/project --project-name my-app
 
   OTHER:
-    python runner.py --resume 2026-03-22T143000     # Resume an interrupted run
-    python runner.py --list-runs                    # List all previous runs
-    python runner.py --list-projects               # List known projects
-    python runner.py --check-cli                   # Verify Claude Code CLI is available
-    python runner.py "..." --mode claude_code       # Force Claude Code CLI mode
-    python runner.py "..." --skip-postmortem        # Skip post-mortem analysis
+    python runner.py --resume 2026-03-22T143000          # Resume an interrupted run
+    python runner.py --list-runs                          # List all previous runs
+    python runner.py --list-projects                      # List known projects
+    python runner.py --check-cli                          # Verify Claude Code CLI is available
+    python runner.py "..." --mode claude_code             # Force headless Claude Code CLI mode
+    python runner.py "..." --mode interactive             # Run each step as a live terminal session
+    python runner.py "..." --skip-postmortem              # Skip post-mortem analysis
+
+  MANUAL STEP EXECUTION:
+    python runner.py --step tdd_green                     # Re-run a single step on the most recent run
+    python runner.py --step tdd_green --run-id 2026-...  # Re-run a step on a specific run
+    python runner.py --step tdd_green --mode interactive  # Re-run a step interactively
 """
 
 import argparse
@@ -38,6 +44,7 @@ from utils.agent import AgentRunner
 from utils.claude_code_runner import ClaudeCodeRunner
 from utils.context import ContextBuilder
 from utils.executor import WorkspaceExecutor
+from utils.interactive_runner import InteractiveRunner
 from utils.logger import StepLogger
 from utils.project_registry import ProjectRegistry, detect_language, slugify
 
@@ -86,9 +93,11 @@ class PipelineRunner:
         self._cc_config = self.pipeline.get("claude_code", {})
 
         # Validate Claude Code CLI availability up front if needed
-        if self.global_mode == "claude_code" or any(
-            s.get("execution_mode") == "claude_code" for s in self.pipeline.get("steps", [])
-        ):
+        needs_cli = self.global_mode in ("claude_code", "interactive") or any(
+            s.get("execution_mode") in ("claude_code", "interactive")
+            for s in self.pipeline.get("steps", [])
+        )
+        if needs_cli:
             ok, msg = ClaudeCodeRunner.check_available(self._cc_config.get("command", "claude"))
             if not ok:
                 console.print(f"[bold red]Claude Code CLI unavailable:[/bold red] {msg}")
@@ -168,6 +177,7 @@ class PipelineRunner:
         self.logger = StepLogger(self.run_dir)
         self.agent_runner = AgentRunner(self.client, AGENTS_DIR)
         self.cc_runner = ClaudeCodeRunner(self._cc_config)
+        self.interactive_runner = InteractiveRunner(self.run_dir, self._cc_config)
 
         PROPOSALS_DIR.mkdir(exist_ok=True)
 
@@ -224,8 +234,8 @@ class PipelineRunner:
             )
         )
 
-        # Only init workspace for new projects / fresh workspaces
-        if not self.project_dir or not self.project_dir.exists():
+        # Always init workspace for new projects (writes boilerplate only if files don't exist)
+        if self.is_new_project:
             self._init_workspace()
 
         steps = self.pipeline["steps"]
@@ -277,11 +287,11 @@ class PipelineRunner:
 
             status = result["status"]
             if status == "success":
-                console.print(f"[green]✓ {step['name']} — done ({result['duration_seconds']:.1f}s)[/green]")
+                console.print(f"[green]OK {step['name']} — done ({result['duration_seconds']:.1f}s)[/green]")
             elif status == "partial":
-                console.print(f"[yellow]⚠ {step['name']} — partial ({result['duration_seconds']:.1f}s)[/yellow]")
+                console.print(f"[yellow]WARN {step['name']} — partial ({result['duration_seconds']:.1f}s)[/yellow]")
             elif status in ("failed", "error"):
-                console.print(f"[red]✗ {step['name']} — {status}[/red]")
+                console.print(f"[red]FAIL {step['name']} — {status}[/red]")
                 if result.get("error"):
                     console.print(f"[red]  Error: {result['error']}[/red]")
                 if not step.get("optional", False):
@@ -300,6 +310,99 @@ class PipelineRunner:
         return run_meta
 
     # ------------------------------------------------------------------
+    # Single-step manual execution
+    # ------------------------------------------------------------------
+
+    def run_single_step(self, step_id: str) -> dict:
+        """
+        Run a single pipeline step by ID against the current loaded run context.
+
+        All previously completed steps in self.context remain available for
+        context building, but only the specified step is (re-)executed and saved.
+        The step is always run even if it was previously marked successful.
+        """
+        steps_by_id = {s["id"]: s for s in self.pipeline["steps"]}
+        if step_id not in steps_by_id:
+            valid = ", ".join(steps_by_id)
+            console.print(f"[red]Unknown step id '{step_id}'. Valid: {valid}[/red]")
+            sys.exit(1)
+
+        step = steps_by_id[step_id]
+        step_index = list(steps_by_id).index(step_id) + 1
+        total = len(steps_by_id)
+
+        console.print(
+            Panel(
+                f"[bold cyan]Run ID:[/bold cyan]    {self.run_id}\n"
+                f"[bold cyan]Step:[/bold cyan]      [{step_index}/{total}] {step['name']}\n"
+                f"[bold cyan]Project:[/bold cyan]   {self.project_name}\n"
+                f"[bold cyan]Workspace:[/bold cyan] {self.workspace}\n"
+                f"[bold cyan]Mode:[/bold cyan]      {self._step_mode(step)}",
+                title="[bold yellow]Single-Step Execution[/bold yellow]",
+                border_style="yellow",
+            )
+        )
+
+        run_meta = self._load_run_meta()
+        if not run_meta:
+            run_meta = {
+                "id": self.run_id,
+                "feature_request": self.feature_request,
+                "language": self.language,
+                "project_name": self.project_name,
+                "project_dir": str(self.project_dir) if self.project_dir else None,
+                "status": "running",
+                "steps": {},
+                "context": self.context,
+            }
+
+        self.logger.log_event("single_step_start", {"step_id": step_id})
+        step_start = datetime.now()
+
+        try:
+            result = self._run_step(step)
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Interrupted.[/yellow]")
+            sys.exit(0)
+        except Exception as e:
+            console.print_exception()
+            result = {"status": "error", "error": str(e)}
+
+        result.setdefault("status", "success")
+        result["duration_seconds"] = (datetime.now() - step_start).total_seconds()
+
+        self.context[step_id] = result
+        run_meta.setdefault("steps", {})[step_id] = {
+            "status": result["status"],
+            "duration_seconds": result["duration_seconds"],
+            "completed_at": datetime.now().isoformat(),
+        }
+        run_meta["context"] = self.context
+        self.logger.save_run_meta(run_meta)
+        self.logger.save_step(step_id, result)
+        self.logger.log_event("single_step_complete", {"step_id": step_id, "status": result["status"]})
+
+        status = result["status"]
+        color = {"success": "green", "partial": "yellow"}.get(status, "red")
+        console.print(
+            f"[{color}]Step '{step['name']}' — {status} "
+            f"({result['duration_seconds']:.1f}s)[/{color}]"
+        )
+        return result
+
+    @staticmethod
+    def _get_most_recent_run_id() -> str | None:
+        """Return the run ID of the most recently created run, or None if no runs exist."""
+        if not RUNS_DIR.exists():
+            return None
+        candidates = sorted(
+            (d for d in RUNS_DIR.iterdir() if d.is_dir() and (d / "run.json").exists()),
+            key=lambda d: d.name,
+            reverse=True,
+        )
+        return candidates[0].name if candidates else None
+
+    # ------------------------------------------------------------------
     # Step dispatch
     # ------------------------------------------------------------------
 
@@ -307,7 +410,12 @@ class PipelineRunner:
         return step.get("execution_mode") or self.global_mode
 
     def _runner(self, step: dict):
-        return self.cc_runner if self._step_mode(step) == "claude_code" else self.agent_runner
+        mode = self._step_mode(step)
+        if mode == "interactive":
+            return self.interactive_runner
+        if mode == "claude_code":
+            return self.cc_runner
+        return self.agent_runner
 
     def _step_workspace(self, step: dict) -> Path:
         """Return the appropriate workspace for a step.
@@ -399,7 +507,7 @@ class PipelineRunner:
         elif test_result["passed"] and failed == 0:
             console.print("  [yellow]Warning: All tests passing — TDD Red expects them to FAIL.[/yellow]")
         else:
-            console.print(f"  [green]✓ TDD Red: {total} test(s) failing as expected[/green]")
+            console.print(f"  [green]OK TDD Red: {total} test(s) failing as expected[/green]")
 
         return {
             "status": "success",
@@ -416,6 +524,7 @@ class PipelineRunner:
         max_attempts = step.get(
             "max_attempts", self.pipeline["execution"]["tdd_green_max_attempts"]
         )
+        is_interactive = isinstance(runner, InteractiveRunner)
 
         self.executor.install_dependencies()
         test_result = self.executor.run_tests()
@@ -441,6 +550,11 @@ class PipelineRunner:
                     f"Fix the remaining failures. Do NOT modify test files."
                 )
 
+            # InteractiveRunner accepts an extra step_id_hint kwarg for task file naming
+            stateful_kwargs: dict = {}
+            if is_interactive:
+                stateful_kwargs["step_id_hint"] = step["id"]
+
             output, messages = runner.run_with_files_stateful(
                 system_prompt=system_prompt,
                 user_message=augmented_message,
@@ -451,6 +565,7 @@ class PipelineRunner:
                 executor=self.executor,
                 can_run_tests=True,
                 max_tokens=max_tokens,
+                **stateful_kwargs,
             )
 
             all_files_written.extend(output.get("files_written", []))
@@ -475,7 +590,7 @@ class PipelineRunner:
             )
 
             if all_passing:
-                console.print(f"  [green]✓ All {test_result['total']} tests passing![/green]")
+                console.print(f"  [green]OK All {test_result['total']} tests passing![/green]")
                 return {
                     "status": "success",
                     "attempts": attempt,
@@ -483,6 +598,12 @@ class PipelineRunner:
                     "type_result": type_result,
                     "files_written": list(set(all_files_written)),
                 }
+
+            # In interactive mode, pause and let the user decide whether to retry
+            if is_interactive and attempt < max_attempts:
+                choice = runner.prompt_retry_or_skip(attempt, max_attempts, test_result)
+                if choice == "skip":
+                    break
 
         console.print(f"  [red]TDD Green failed after {max_attempts} attempts[/red]")
         return {
@@ -555,7 +676,7 @@ class PipelineRunner:
         proposal_path.write_text(json.dumps(proposal, indent=2))
 
         n = len(proposal.get("proposals", []))
-        console.print(f"  [green]✓ Post-mortem complete: {n} proposal(s)[/green]")
+        console.print(f"  [green]OK Post-mortem complete: {n} proposal(s)[/green]")
         console.print(f"  [dim]python apply_proposal.py {proposal_path}[/dim]")
 
         return {
@@ -694,9 +815,14 @@ def main():
     parser.add_argument(
         "--mode",
         "-m",
-        choices=["api", "claude_code"],
+        choices=["api", "claude_code", "interactive"],
         default=None,
-        help="Override execution mode for all steps ('api' or 'claude_code').",
+        help=(
+            "Override execution mode for all steps. "
+            "'api' uses the Anthropic SDK directly; "
+            "'claude_code' uses headless claude --print; "
+            "'interactive' launches a live claude terminal session for each step."
+        ),
     )
     parser.add_argument(
         "--resume",
@@ -723,6 +849,20 @@ def main():
         action="store_true",
         help="Check whether the Claude Code CLI is installed and available.",
     )
+    parser.add_argument(
+        "--step",
+        metavar="STEP_ID",
+        help=(
+            "Run a single pipeline step against an existing run. "
+            "Example: --step tdd_green. "
+            "Use --run-id to target a specific run; defaults to the most recent."
+        ),
+    )
+    parser.add_argument(
+        "--run-id",
+        metavar="RUN_ID",
+        help="Target run ID when using --step. Defaults to the most recent run.",
+    )
 
     args = parser.parse_args()
 
@@ -730,7 +870,7 @@ def main():
         pipeline = json.loads((BASE_DIR / "pipeline.json").read_text())
         cmd = pipeline.get("claude_code", {}).get("command", "claude")
         ok, msg = ClaudeCodeRunner.check_available(cmd)
-        console.print(f"{'[green]✓[/green]' if ok else '[red]✗[/red]'} {msg}")
+        console.print(f"{'[green]OK[/green]' if ok else '[red]FAIL[/red]'} {msg}")
         sys.exit(0 if ok else 1)
 
     if args.list_runs:
@@ -741,11 +881,40 @@ def main():
         _list_projects()
         return
 
-    if not args.feature_request and not args.resume:
+    # --step and --resume are mutually exclusive
+    if getattr(args, "step", None) and args.resume:
+        console.print("[red]--step and --resume are mutually exclusive.[/red]")
+        sys.exit(1)
+
+    if not args.feature_request and not args.resume and not getattr(args, "step", None):
         parser.print_help()
         sys.exit(1)
 
     project_dir = Path(args.project_dir) if args.project_dir else None
+
+    # ------------------------------------------------------------------
+    # --step: single-step manual execution against an existing run
+    # ------------------------------------------------------------------
+    if getattr(args, "step", None):
+        run_id = getattr(args, "run_id", None)
+        if run_id is None:
+            run_id = PipelineRunner._get_most_recent_run_id()
+            if run_id is None:
+                console.print("[red]No runs found. Run the pipeline at least once before using --step.[/red]")
+                sys.exit(1)
+            console.print(f"[dim]--run-id not specified; using most recent run: {run_id}[/dim]")
+
+        pipeline_runner = PipelineRunner(
+            feature_request="",  # Loaded from saved run meta
+            language=getattr(args, "language", None),
+            project_name=getattr(args, "project_name", None),
+            project_dir=project_dir,
+            resume_run_id=run_id,
+            skip_postmortem=args.skip_postmortem,
+            mode_override=args.mode,
+        )
+        pipeline_runner.run_single_step(args.step)
+        return
 
     runner = PipelineRunner(
         feature_request=args.feature_request or "",

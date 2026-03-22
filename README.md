@@ -1,58 +1,60 @@
 # Self-Improving Software Development Pipeline
 
-An agentic pipeline for **creating new projects from scratch** and **maintaining existing projects** — using TDD, requirements verification, and integration tests. After each run, an Opus-powered post-mortem analyses the work and proposes improvements to the pipeline itself.
+An agentic pipeline for **creating new projects from scratch** and **maintaining existing projects** — using TDD, requirements verification, and integration tests. After each run, a post-mortem analyses the work and proposes improvements to the pipeline itself.
+
+> For a complete user guide, see [GUIDE.md](GUIDE.md).
 
 ## How It Works
 
 ```
 Feature Request
-      │
-      ▼
-┌─────────────────┐
-│  1. Requirements │  Sonnet generates structured spec with acceptance criteria
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  2. Plan         │  Sonnet designs architecture, file structure, interfaces
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  3. TDD Red      │  Sonnet writes failing tests for all acceptance criteria
-└────────┬────────┘
-         │  (tests written, verified to FAIL)
-         ▼
-┌─────────────────┐
-│  4. TDD Green    │  Sonnet implements code until ALL tests pass (up to 5 retries)
-└────────┬────────┘
-         │  (tests verified to PASS + type check)
-         ▼
-┌─────────────────┐
-│  5. Verification │  Sonnet checks every AC is genuinely satisfied
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  6. Integration  │  Sonnet writes & runs end-to-end integration tests
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  7. Post-mortem  │  Opus analyses the full run and proposes pipeline improvements
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  8. Doc Update   │  Sonnet creates/updates living docs in docs/projects/{name}/
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────────────────────────────┐
-│  apply_proposal.py                       │
-│  Human reviews proposals, approves/rejects│
-│  Changes committed with [self-improve]    │
-└─────────────────────────────────────────┘
+      |
+      v
++------------------+
+|  1. Requirements  |  Generates structured spec with acceptance criteria
++--------+---------+
+         |
+         v
++------------------+
+|  2. Plan          |  Designs architecture, file structure, interfaces
++--------+---------+
+         |
+         v
++------------------+
+|  3. TDD Red       |  Writes failing tests for all acceptance criteria
++--------+---------+
+         |  (tests written, verified to FAIL)
+         v
++------------------+
+|  4. TDD Green     |  Implements code until ALL tests pass (up to 5 retries)
++--------+---------+
+         |  (tests verified to PASS + type check)
+         v
++------------------+
+|  5. Verification  |  Checks every AC is genuinely satisfied
++--------+---------+
+         |
+         v
++------------------+
+|  6. Integration   |  Writes and runs end-to-end integration tests
++--------+---------+
+         |
+         v
++------------------+
+|  7. Post-mortem   |  Analyses the full run, proposes pipeline improvements
++--------+---------+
+         |
+         v
++------------------+
+|  8. Doc Update    |  Creates/updates living docs in docs/projects/{name}/
++--------+---------+
+         |
+         v
++------------------------------------------+
+|  apply_proposal.py                        |
+|  Human reviews proposals, approves/rejects|
+|  Changes committed with [self-improve]    |
++------------------------------------------+
 ```
 
 ## Quick Start
@@ -67,85 +69,80 @@ export ANTHROPIC_API_KEY=sk-ant-...
 ### New project (build from scratch)
 
 ```bash
-# Create a new project — auto-names it from the feature request
+# Auto-names from the feature request
 python runner.py "Build a REST API for todo items" --language python
 
-# Give it an explicit name (used for docs/projects/ folder and registry)
+# Explicit name
 python runner.py "Build a REST API for todo items" --project-name todo-api
 
-# TypeScript project
+# TypeScript
 python runner.py "Build a CLI tool for file encryption" --language typescript --project-name file-encryptor
 ```
 
 ### Existing project (add features or fix bugs)
 
 ```bash
-# Point at an existing project — language auto-detected, project auto-registered on first run
+# Point at an existing project directory
 python runner.py "Add password reset flow" --project-dir /path/to/myproject
 
-# Explicit name and language override
-python runner.py "Fix the login race condition" --project-dir /path/to/myproject --project-name my-app --language python
-
-# Subsequent runs on the same project (looked up by name)
+# Subsequent runs by name (looked up from registry)
 python runner.py "Add email notifications" --project-name my-app
+```
+
+### Execution modes
+
+```bash
+# Default: Anthropic SDK (requires funded API key)
+python runner.py "..." --mode api
+
+# Headless Claude Code CLI (requires Claude Max plan)
+python runner.py "..." --mode claude_code
+
+# Interactive: launches a live claude terminal session for each step
+# You can watch, guide, and collaborate on each step in real time
+python runner.py "..." --mode interactive
+```
+
+### Manual step execution
+
+```bash
+# Re-run a single step on the most recent run
+python runner.py --step tdd_green
+
+# Re-run a step on a specific run
+python runner.py --step tdd_green --run-id 2026-03-22T143000
+
+# Re-run a step interactively
+python runner.py --step tdd_green --mode interactive
+
+# Resume an interrupted run from where it left off
+python runner.py --resume 2026-03-22T143000
 ```
 
 ### Project registry
 
 ```bash
-# List all known projects
-python runner.py --list-projects
-
-# List all previous runs
-python runner.py --list-runs
-```
-
-### Other options
-
-```bash
-# Use Claude Code CLI for all steps
-python runner.py "..." --mode claude_code
-
-# Check Claude Code CLI is available
-python runner.py --check-cli
-
-# Skip post-mortem (faster, no proposals generated)
-python runner.py "..." --skip-postmortem
-
-# Resume an interrupted run
-python runner.py --resume 2026-03-22T143000
+python runner.py --list-projects   # List all known projects
+python runner.py --list-runs       # List all previous runs
+python runner.py --check-cli       # Verify Claude Code CLI is available
 ```
 
 ### Review self-improvement proposals
 
 ```bash
-# Review most recent pending proposal (interactive)
-python apply_proposal.py
-
-# Review a specific proposal
-python apply_proposal.py proposals/2026-03-22T143000.json
-
-# List all proposals
-python apply_proposal.py --list
-
-# Apply all without prompting (use with care)
-python apply_proposal.py --auto-apply
-
-# Preview changes without applying
-python apply_proposal.py --dry-run
+python apply_proposal.py                        # Most recent pending proposal
+python apply_proposal.py proposals/2026-...json # Specific proposal
+python apply_proposal.py --list                 # List all proposals
+python apply_proposal.py --dry-run              # Preview without applying
+python apply_proposal.py --auto-apply           # Apply all without prompting
 ```
 
 ### Run post-mortem on any completed run
 
 ```bash
-# Most recent run
-python postmortem.py
-
-# Specific run
-python postmortem.py 2026-03-22T143000
-
-# List available runs
-python postmortem.py --list
+python postmortem.py                  # Most recent run
+python postmortem.py 2026-03-22T143000 # Specific run
+python postmortem.py --list           # List available runs
 ```
 
 ## Directory Structure
@@ -155,9 +152,11 @@ self-improvement-pipeline/
 ├── runner.py                  # Main pipeline entry point
 ├── postmortem.py              # Standalone post-mortem runner
 ├── apply_proposal.py          # Interactive proposal review/apply
-├── pipeline.json              # Pipeline step definitions
+├── pipeline.json              # Pipeline step definitions and config
 ├── languages.json             # Language-specific execution configs
-├── requirements.txt           # Python dependencies
+├── projects.json              # Project registry (auto-managed)
+├── GUIDE.md                   # Complete user guide
+├── EVOLUTION.md               # Human-readable self-improvement history
 │
 ├── agents/                    # Agent system prompts (one per step)
 │   ├── 01_requirements.md
@@ -166,20 +165,22 @@ self-improvement-pipeline/
 │   ├── 04_tdd_green.md
 │   ├── 05_verification.md
 │   ├── 06_integration.md
-│   └── 07_postmortem.md
+│   ├── 07_postmortem.md
+│   └── 08_doc_update.md
 │
 ├── utils/                     # Internal modules
-│   ├── agent.py               # Agent tool-use loop
+│   ├── agent.py               # API-mode tool-use loop
+│   ├── claude_code_runner.py  # Headless CLI runner
+│   ├── interactive_runner.py  # Interactive terminal session runner
 │   ├── executor.py            # Workspace code execution
 │   ├── context.py             # Context building between steps
-│   └── logger.py              # Run artifact logging
+│   ├── logger.py              # Run artifact logging
+│   └── project_registry.py   # Project registry management
 │
-├── runs/                      # One directory per pipeline run
+├── runs/                      # One directory per pipeline run (gitignored)
 │   └── 2026-03-22T143000/
 │       ├── run.json           # Metadata, status, step results
 │       ├── workspace/         # Generated code lives here
-│       │   ├── src/
-│       │   └── tests/
 │       ├── requirements.json  # Step 1 output
 │       ├── plan.json          # Step 2 output
 │       ├── tdd_red.json       # Step 3 output
@@ -190,17 +191,15 @@ self-improvement-pipeline/
 │       └── events.jsonl       # Event log
 │
 ├── proposals/                 # Post-mortem proposals (pending review)
-│   └── 2026-03-22T143000.json
-│
 ├── skills/                    # Skills created by self-improvement
-│
-├── EVOLUTION.md               # Human-readable self-improvement history
-└── README.md                  # This file
+└── docs/
+    ├── self/                  # Pipeline documentation
+    └── projects/              # Per-project living docs (auto-generated)
 ```
 
 ## The Self-Improvement Loop
 
-After each pipeline run, the post-mortem step (powered by Opus) analyses:
+After each pipeline run, the post-mortem step analyses:
 
 - **Agent output quality** — Were requirements complete? Were tests thorough? Did verification catch real issues?
 - **Process failures** — Did any step fail or retry excessively?
@@ -215,17 +214,9 @@ Each applied improvement is:
 2. Appended to `EVOLUTION.md` with rationale
 3. Committed to git with a `[self-improve]` tag
 
-### Viewing the history
-
 ```bash
-# See all self-improvement commits
-git log --grep="\[self-improve\]" --oneline
-
-# See exactly what changed in a specific improvement
-git show <commit-hash>
-
-# See the full narrative history
-cat EVOLUTION.md
+git log --grep="\[self-improve\]" --oneline   # All self-improvement commits
+cat EVOLUTION.md                               # Full narrative history
 ```
 
 ## Configuration
@@ -244,50 +235,44 @@ Controls step definitions, model selection, and execution settings:
     "tdd_green_max_attempts": 5,
     "agent_max_tokens": 8192,
     "postmortem_max_tokens": 16000
-  }
+  },
+  "execution_mode": "api"
 }
 ```
 
+Set `"agent"` to any Claude model ID. Set `"execution_mode"` to `"api"`, `"claude_code"`, or `"interactive"` as the global default. Override per-step with `"execution_mode"` on any step in the `steps` array.
+
 ### languages.json
 
-Controls how code is compiled and tested for each language. Supports `python`, `typescript`, `javascript`.
+Controls how code is compiled and tested. Supports `python`, `typescript`, `javascript`.
 
 ### Adding a pipeline step
 
 1. Create an agent prompt in `agents/NN_stepname.md`
 2. Add the step to `pipeline.json`
-3. Restart the pipeline
-
-The self-improvement process can also do this automatically via proposals.
+3. The self-improvement process can also do this automatically via proposals
 
 ## Documentation
 
-Detailed documentation is in `docs/`:
-
 | File | Contents |
 |------|----------|
-**Pipeline documentation** (`docs/self/`):
-
-| File | Contents |
-|------|----------|
-| [`docs/self/architecture.md`](docs/self/architecture.md) | System design, components, data flow, design decisions |
-| [`docs/self/pipeline-steps.md`](docs/self/pipeline-steps.md) | What each step does, inputs/outputs, quality signals, failure modes |
-| [`docs/self/agent-prompts.md`](docs/self/agent-prompts.md) | How prompts work, tool sets, template variables, writing guidelines |
-| [`docs/self/execution-modes.md`](docs/self/execution-modes.md) | API mode vs Claude Code CLI mode — trade-offs, config, per-step overrides |
-| [`docs/self/self-improvement.md`](docs/self/self-improvement.md) | The improvement loop in detail — proposals, apply_proposal.py, git history |
-| [`docs/self/adding-a-step.md`](docs/self/adding-a-step.md) | Step-by-step guide to adding a new pipeline step |
-| [`docs/self/workspace-execution.md`](docs/self/workspace-execution.md) | Code execution, language support, adding a new language |
-
-**Project documentation** (`docs/projects/`):
-
-Auto-generated and maintained by the pipeline. One subdirectory per project, created on first run and updated on every subsequent run.
+| [GUIDE.md](GUIDE.md) | Complete user guide — start here |
+| [docs/self/architecture.md](docs/self/architecture.md) | System design, components, data flow |
+| [docs/self/pipeline-steps.md](docs/self/pipeline-steps.md) | Each step in detail — inputs, outputs, failure modes |
+| [docs/self/agent-prompts.md](docs/self/agent-prompts.md) | How prompts work, template variables, writing guidelines |
+| [docs/self/execution-modes.md](docs/self/execution-modes.md) | API vs Claude Code CLI vs Interactive — trade-offs and config |
+| [docs/self/self-improvement.md](docs/self/self-improvement.md) | The improvement loop in detail |
+| [docs/self/adding-a-step.md](docs/self/adding-a-step.md) | Guide to adding a new pipeline step |
+| [docs/self/workspace-execution.md](docs/self/workspace-execution.md) | Code execution, language support |
 
 ## Models Used
 
-| Step | Model | Why |
-|------|-------|-----|
-| Requirements, Plan, TDD Red/Green, Verification, Integration | `claude-sonnet-4-6` | Fast, capable for structured code tasks |
-| Post-mortem | `claude-opus-4-6` | Deep analysis of the full run, generating concrete improvement proposals |
+| Step | Default Model | Role |
+|------|--------------|------|
+| Requirements, Plan, TDD Red/Green, Verification, Integration, Doc Update | `claude-sonnet-4-6` | Structured code tasks |
+| Post-mortem | `claude-opus-4-6` | Deep analysis, concrete improvement proposals |
+
+Configurable in `pipeline.json`. Any Claude model ID is accepted.
 
 ## Safety Notes
 

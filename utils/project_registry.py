@@ -5,9 +5,9 @@ The registry lives in projects.json and maps project names to metadata.
 Each project gets a folder under docs/projects/{name}/ for living documentation.
 
 New vs existing project detection:
-  - If project_name is in the registry → existing project
-  - If project_dir matches a registered project_dir → existing project (name resolved)
-  - Otherwise → new project (registered on first run)
+  - If project_name is in the registry -> existing project
+  - If project_dir matches a registered project_dir -> existing project (name resolved)
+  - Otherwise -> new project (registered on first run)
 """
 
 import json

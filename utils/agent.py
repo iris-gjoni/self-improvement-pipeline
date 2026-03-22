@@ -406,7 +406,7 @@ class AgentRunner:
             console.print(f"    [dim]  running tests{' (' + test_path + ')' if test_path else ''}...[/dim]")
             result = executor.run_tests(test_path)
             console.print(
-                f"    [dim]  → {result['passed_count']} passed, "
+                f"    [dim]  -> {result['passed_count']} passed, "
                 f"{result['failed_count']} failed, "
                 f"{result['error_count']} errors[/dim]"
             )

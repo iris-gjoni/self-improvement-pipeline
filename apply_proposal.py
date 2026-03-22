@@ -182,7 +182,7 @@ def apply_proposal(
         # Validate all operations
         errors = _validate_operations(operations)
         if errors:
-            console.print("[red]⚠ Validation errors:[/red]")
+            console.print("[red]WARN Validation errors:[/red]")
             for e in errors:
                 console.print(f"  [red]• {e}[/red]")
 
@@ -231,9 +231,9 @@ def apply_proposal(
     for prop in approved:
         try:
             _apply_operations(prop.get("operations", []))
-            console.print(f"  [green]✓ Applied: {prop.get('title')}[/green]")
+            console.print(f"  [green]OK Applied: {prop.get('title')}[/green]")
         except Exception as e:
-            console.print(f"  [red]✗ Failed to apply '{prop.get('title')}': {e}[/red]")
+            console.print(f"  [red]FAIL Failed to apply '{prop.get('title')}': {e}[/red]")
             apply_errors.append(str(e))
             rejected.append(prop)
             approved.remove(prop)
@@ -452,7 +452,7 @@ def _git_commit(run_id: str, approved: list[dict], rejected: list[dict]) -> None
             text=True,
         )
         commit_hash = hash_result.stdout.strip()
-        console.print(f"[green]✓ Committed: {commit_hash}[/green]")
+        console.print(f"[green]OK Committed: {commit_hash}[/green]")
         console.print(f"  [dim]git show {commit_hash}[/dim]")
     else:
         console.print(f"[yellow]Git commit failed: {result.stderr}[/yellow]")
