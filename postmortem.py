@@ -118,20 +118,37 @@ def run_postmortem(run_id: str) -> str:
 
     # Save proposal
     PROPOSALS_DIR.mkdir(exist_ok=True)
+
+    # Unwrap nested output — different runners nest differently
+    inner = result
+    for _ in range(3):
+        if isinstance(inner, dict) and "output" in inner and isinstance(inner["output"], dict):
+            candidate = inner["output"]
+            if any(k in candidate for k in ("analysis", "proposals", "run_summary", "output")):
+                inner = candidate
+            else:
+                break
+        else:
+            break
+
+    analysis = inner.get("analysis", "")
+    if isinstance(analysis, dict):
+        analysis = json.dumps(analysis, indent=2, default=str)
+
     proposal = {
         "id": run_id,
         "run_id": run_id,
         "generated_at": datetime.now().isoformat(),
         "status": "pending",
-        "analysis": result.get("analysis", ""),
-        "run_summary": result.get("run_summary", {}),
-        "proposals": result.get("proposals", []),
+        "analysis": analysis,
+        "run_summary": inner.get("run_summary", {}),
+        "proposals": inner.get("proposals", []),
     }
 
     proposal_path = PROPOSALS_DIR / f"{run_id}.json"
     proposal_path.write_text(json.dumps(proposal, indent=2))
 
-    n = len(proposal.get("proposals", []))
+    n = len(proposal["proposals"])
     quality = proposal.get("run_summary", {}).get("overall_quality", "?")
     console.print(f"\n[green]OK Post-mortem complete[/green]")
     console.print(f"  Overall quality: [bold]{quality}[/bold]")

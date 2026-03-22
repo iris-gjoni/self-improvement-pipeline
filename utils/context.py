@@ -7,6 +7,25 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from utils.project_registry import ProjectRegistry
 
+# ---------------------------------------------------------------------------
+# Token estimation
+# ---------------------------------------------------------------------------
+
+# Average English text: ~4 chars per token for Claude.
+# Code is denser (~3.5 chars/token). We use 3.5 as a conservative estimate
+# so we overcount slightly rather than blow past the context window.
+CHARS_PER_TOKEN = 3.5
+
+# Default token budget for context messages. This leaves room for the system
+# prompt (~2K tokens) and the model's output (max_tokens) within the 200K window.
+# Individual steps can override via max_context_tokens parameter.
+DEFAULT_MAX_CONTEXT_TOKENS = 80_000
+
+
+def estimate_tokens(text: str) -> int:
+    """Estimate token count from a string. Conservative (overestimates slightly)."""
+    return int(len(text) / CHARS_PER_TOKEN)
+
 
 class ContextBuilder:
     def __init__(
@@ -29,7 +48,8 @@ class ContextBuilder:
         self.project_doc_dir = project_doc_dir
         self.registry = registry
 
-    def build_for_step(self, step: dict) -> str:
+    def build_for_step(self, step: dict, max_context_tokens: int | None = None) -> str:
+        token_budget = max_context_tokens or DEFAULT_MAX_CONTEXT_TOKENS
         step_id = step["id"]
         parts: list[str] = []
 
@@ -59,21 +79,21 @@ class ContextBuilder:
                 parts.append(self._existing_code_notice())
             parts.append(self._section("Requirements Specification", "requirements"))
             parts.append(self._section("Implementation Plan", "plan"))
-            parts.append(self._workspace_files_full(include_tests=True))
+            parts.append(self._workspace_files_full(include_tests=True, token_budget=token_budget))
 
         elif step_id == "verification":
             parts.append(self._section("Requirements Specification", "requirements"))
             parts.append(self._section("Implementation Plan", "plan"))
             parts.append(self._section("TDD Red Results", "tdd_red"))
             parts.append(self._section("TDD Green Results", "tdd_green"))
-            parts.append(self._workspace_files_full(include_tests=True))
+            parts.append(self._workspace_files_full(include_tests=True, token_budget=token_budget))
 
         elif step_id == "integration":
             parts.append(self._section("Requirements Specification", "requirements"))
             parts.append(self._section("Implementation Plan", "plan"))
             parts.append(self._section("TDD Green Results", "tdd_green"))
             parts.append(self._section("Verification Results", "verification"))
-            parts.append(self._workspace_files_full(include_tests=False))
+            parts.append(self._workspace_files_full(include_tests=False, token_budget=token_budget))
 
         elif step_id == "postmortem":
             parts.append(self._section("Requirements Specification", "requirements"))
@@ -91,7 +111,14 @@ class ContextBuilder:
             parts.append(self._workspace_structure())
             parts.append(self._existing_project_docs())
 
-        return "\n".join(p for p in parts if p.strip())
+        result = "\n".join(p for p in parts if p.strip())
+
+        # Enforce overall token budget
+        estimated = estimate_tokens(result)
+        if estimated > token_budget:
+            result = self._trim_to_budget(result, token_budget)
+
+        return result
 
     # ------------------------------------------------------------------
     # Header and project identity
@@ -191,10 +218,12 @@ class ContextBuilder:
         listing = "\n".join(files)
         return f"## Workspace File Structure\n\n```\n{listing}\n```\n"
 
-    def _workspace_files_full(self, include_tests: bool = True) -> str:
+    def _workspace_files_full(self, include_tests: bool = True, token_budget: int = DEFAULT_MAX_CONTEXT_TOKENS) -> str:
         if not self.workspace or not self.workspace.exists():
             return ""
-        parts = ["## Workspace Files\n"]
+
+        # Collect all eligible files with their sizes
+        eligible: list[tuple[Path, int]] = []
         for p in sorted(self.workspace.rglob("*")):
             if not p.is_file() or self._is_ignored(p):
                 continue
@@ -202,12 +231,52 @@ class ContextBuilder:
             if not include_tests and "test" in rel.lower():
                 continue
             try:
+                size = p.stat().st_size
+            except OSError:
+                size = 0
+            eligible.append((p, size))
+
+        if not eligible:
+            return ""
+
+        # Budget: reserve ~40% of total token budget for workspace files.
+        # The rest is for step outputs, headers, etc.
+        workspace_token_budget = int(token_budget * 0.4)
+        workspace_char_budget = int(workspace_token_budget * CHARS_PER_TOKEN)
+
+        # Per-file cap: distribute budget, but cap individual files
+        per_file_char_cap = min(6000, max(2000, workspace_char_budget // max(len(eligible), 1)))
+
+        parts = ["## Workspace Files\n"]
+        chars_used = 0
+        files_included = 0
+        files_skipped = 0
+
+        for p, size in eligible:
+            rel = str(p.relative_to(self.workspace)).replace("\\", "/")
+
+            # Check if we're approaching the budget
+            if chars_used > workspace_char_budget:
+                files_skipped += 1
+                continue
+
+            try:
                 content = p.read_text(encoding="utf-8", errors="replace")
-                if len(content) > 6000:
-                    content = content[:6000] + "\n... [truncated]"
-                parts.append(f"### `{rel}`\n\n```\n{content}\n```\n")
+                if len(content) > per_file_char_cap:
+                    content = content[:per_file_char_cap] + f"\n... [truncated — {len(content):,} chars total]"
+                file_block = f"### `{rel}`\n\n```\n{content}\n```\n"
+                chars_used += len(file_block)
+                parts.append(file_block)
+                files_included += 1
             except Exception:
                 parts.append(f"### `{rel}`\n\n_[could not read file]_\n")
+
+        if files_skipped > 0:
+            parts.append(
+                f"\n_[Context truncated: {files_skipped} file(s) omitted to stay within token budget. "
+                f"Use `read_file` or `list_files` to explore the full workspace.]_\n"
+            )
+
         return "\n".join(parts)
 
     # ------------------------------------------------------------------
@@ -241,27 +310,28 @@ class ContextBuilder:
     # ------------------------------------------------------------------
 
     def _pipeline_config(self) -> str:
-        pipeline_path = self.workspace.parent.parent.parent / "pipeline.json"
-        agents_path = self.workspace.parent.parent.parent / "agents"
-
-        # Try BASE_DIR relative paths as fallback
-        if not pipeline_path.exists():
-            # Walk up from workspace to find pipeline.json
-            search = self.workspace
-            for _ in range(6):
-                if (search / "pipeline.json").exists():
-                    pipeline_path = search / "pipeline.json"
-                    agents_path = search / "agents"
-                    break
-                search = search.parent
+        # Resolve pipeline root reliably: walk up from workspace until we find pipeline.json
+        pipeline_path = None
+        agents_path = None
+        search = self.workspace
+        for _ in range(8):
+            candidate = search / "pipeline.json"
+            if candidate.exists():
+                pipeline_path = candidate
+                agents_path = search / "agents"
+                break
+            parent = search.parent
+            if parent == search:
+                break  # filesystem root
+            search = parent
 
         parts = ["## Current Pipeline Configuration\n"]
 
-        if pipeline_path.exists():
+        if pipeline_path and pipeline_path.exists():
             content = pipeline_path.read_text()
             parts.append(f"### pipeline.json\n\n```json\n{content}\n```\n")
 
-        if agents_path.exists():
+        if agents_path and agents_path.exists():
             for f in sorted(agents_path.glob("*.md")):
                 content = f.read_text()
                 parts.append(f"### agents/{f.name}\n\n```\n{content}\n```\n")
@@ -271,6 +341,27 @@ class ContextBuilder:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _trim_to_budget(text: str, token_budget: int) -> str:
+        """
+        Trim assembled context to fit within the token budget.
+        Cuts from the end (workspace files are last and largest),
+        preserving the header and step outputs at the top.
+        """
+        char_budget = int(token_budget * CHARS_PER_TOKEN)
+        if len(text) <= char_budget:
+            return text
+        trimmed = text[:char_budget]
+        # Try to cut at a section boundary to avoid mid-file truncation
+        last_section = trimmed.rfind("\n## ")
+        if last_section > char_budget * 0.5:
+            trimmed = trimmed[:last_section]
+        trimmed += (
+            "\n\n_[Context truncated to fit within token budget. "
+            "Use `read_file` or `list_files` to access remaining workspace files.]_\n"
+        )
+        return trimmed
 
     @staticmethod
     def _is_ignored(path: Path) -> bool:

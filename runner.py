@@ -47,6 +47,7 @@ from utils.executor import WorkspaceExecutor
 from utils.interactive_runner import InteractiveRunner
 from utils.logger import StepLogger
 from utils.project_registry import ProjectRegistry, detect_language, slugify
+from utils.validation import validate_step_output, StepOutputError
 
 console = Console()
 
@@ -273,6 +274,18 @@ class PipelineRunner:
                 console.print_exception()
                 result = {"status": "error", "error": str(e)}
 
+            # Validate step output structure before continuing
+            try:
+                validate_step_output(step_id, result)
+            except StepOutputError as e:
+                console.print(f"  [red]Validation: {e}[/red]")
+                if not step.get("optional", False):
+                    result["status"] = "error"
+                    result["error"] = str(e)
+                else:
+                    result.setdefault("status", "partial")
+                    result["validation_warning"] = str(e)
+
             result.setdefault("status", "success")
             result["duration_seconds"] = (datetime.now() - step_start).total_seconds()
 
@@ -374,6 +387,14 @@ class PipelineRunner:
         except Exception as e:
             console.print_exception()
             result = {"status": "error", "error": str(e)}
+
+        # Validate step output structure
+        try:
+            validate_step_output(step_id, result)
+        except StepOutputError as e:
+            console.print(f"  [red]Validation: {e}[/red]")
+            result.setdefault("status", "partial")
+            result["validation_warning"] = str(e)
 
         result.setdefault("status", "success")
         result["duration_seconds"] = (datetime.now() - step_start).total_seconds()
@@ -668,21 +689,52 @@ class PipelineRunner:
             max_tokens=max_tokens,
         )
 
+        # Unwrap nested output — different runners nest differently:
+        #   API mode:          {"analysis": ..., "proposals": [...]}
+        #   Interactive/CC:    {"output": {"analysis": ..., "proposals": [...]}}
+        #   Double-nested:     {"output": {"output": {"analysis": ..., "proposals": [...]}}}
+        inner = result
+        for _ in range(3):  # unwrap up to 3 levels of "output" nesting
+            if isinstance(inner, dict) and "output" in inner and isinstance(inner["output"], dict):
+                # Only unwrap if the inner dict looks like it has postmortem keys
+                candidate = inner["output"]
+                if any(k in candidate for k in ("analysis", "proposals", "run_summary", "output")):
+                    inner = candidate
+                else:
+                    break
+            else:
+                break
+
+        analysis = inner.get("analysis", "")
+        run_summary = inner.get("run_summary", {})
+        proposals = inner.get("proposals", [])
+
+        # If analysis is itself a dict (e.g. {"summary": ..., "step_analysis": ...}),
+        # convert to string for the proposal file
+        if isinstance(analysis, dict):
+            analysis_text = json.dumps(analysis, indent=2, default=str)
+        else:
+            analysis_text = str(analysis)
+
         proposal = {
             "id": self.run_id,
             "run_id": self.run_id,
             "project_name": self.project_name,
             "generated_at": datetime.now().isoformat(),
             "status": "pending",
-            "analysis": result.get("analysis", ""),
-            "run_summary": result.get("run_summary", {}),
-            "proposals": result.get("proposals", []),
+            "analysis": analysis_text,
+            "run_summary": run_summary,
+            "proposals": proposals,
         }
 
         proposal_path = PROPOSALS_DIR / f"{self.run_id}.json"
         proposal_path.write_text(json.dumps(proposal, indent=2))
 
-        n = len(proposal.get("proposals", []))
+        n = len(proposals)
+        if n == 0 and inner != result:
+            console.print("  [yellow]Warning: Post-mortem produced output but 0 proposals were extracted.[/yellow]")
+            console.print(f"  [dim]Raw keys in result: {list(result.keys())}[/dim]")
+            console.print(f"  [dim]Unwrapped keys: {list(inner.keys())}[/dim]")
         console.print(f"  [green]OK Post-mortem complete: {n} proposal(s)[/green]")
         console.print(f"  [dim]python apply_proposal.py {proposal_path}[/dim]")
 

@@ -18,9 +18,10 @@ import json
 import re
 import subprocess
 from pathlib import Path
-from typing import Any
 
 from rich.console import Console
+
+from utils.snapshot import WorkspaceSnapshot
 
 console = Console()
 
@@ -174,17 +175,16 @@ class ClaudeCodeRunner:
         augmented_system = system_prompt + addendum
         full_prompt = self._combine(augmented_system, user_message)
 
-        files_before = self._snapshot(workspace)
+        snapshot = WorkspaceSnapshot(workspace)
         output = self._invoke(
             prompt=full_prompt,
             cwd=workspace,
             tools=self.code_tools,
             model=model,
         )
-        files_after = self._snapshot(workspace)
-        new_files = sorted(set(files_after) - set(files_before))
+        changes = snapshot.diff()
 
-        return {"summary": output, "files_written": new_files}
+        return {"summary": output, "files_written": changes["all_changed"]}
 
     def run_with_files_stateful(
         self,
@@ -213,7 +213,7 @@ class ClaudeCodeRunner:
             combined_user = (combined_user + "\n\n" + retry_message).strip()
 
         full_prompt = self._combine(augmented_system, combined_user)
-        files_before = self._snapshot(workspace)
+        snapshot = WorkspaceSnapshot(workspace)
 
         output = self._invoke(
             prompt=full_prompt,
@@ -222,9 +222,8 @@ class ClaudeCodeRunner:
             model=model,
         )
 
-        files_after = self._snapshot(workspace)
-        new_files = sorted(set(files_after) - set(files_before))
-        result = {"summary": output, "files_written": new_files}
+        changes = snapshot.diff()
+        result = {"summary": output, "files_written": changes["all_changed"]}
         return result, []  # No message state to return
 
     def run_postmortem(
@@ -352,21 +351,13 @@ class ClaudeCodeRunner:
                             break
 
         return {
-            "summary": text,
-            "_parse_error": "Could not extract JSON from Claude Code response",
+            "summary": text[:2000],
+            "_parse_error": (
+                "Could not extract JSON from Claude Code response. "
+                "The model may not have formatted its output correctly."
+            ),
         }
 
-    @staticmethod
-    def _snapshot(workspace: Path) -> list[str]:
-        """Return sorted list of relative file paths in workspace (ignoring caches)."""
-        if not workspace.exists():
-            return []
-        ignored = {"__pycache__", ".pytest_cache", "node_modules", ".mypy_cache", "dist", "build"}
-        files = []
-        for p in workspace.rglob("*"):
-            if p.is_file() and not any(part in ignored for part in p.parts):
-                files.append(str(p.relative_to(workspace)).replace("\\", "/"))
-        return sorted(files)
 
     @staticmethod
     def check_available(command: str = "claude") -> tuple[bool, str]:

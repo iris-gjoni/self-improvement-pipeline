@@ -22,6 +22,8 @@ from pathlib import Path
 from rich.console import Console
 from rich.panel import Panel
 
+from utils.snapshot import WorkspaceSnapshot
+
 console = Console()
 
 # ---------------------------------------------------------------------------
@@ -194,7 +196,7 @@ class InteractiveRunner:
             f"(in the run directory). The workspace and run directory have "
             f"both been added as context directories."
         )
-        files_before = _snapshot(workspace)
+        snapshot = WorkspaceSnapshot(workspace)
 
         self._launch_session(
             short_message=short_msg,
@@ -203,12 +205,11 @@ class InteractiveRunner:
             allowed_tools=self.code_tools,
         )
 
-        files_after = _snapshot(workspace)
-        new_and_changed = sorted(set(files_after) - set(files_before))
+        changes = snapshot.diff()
 
         result = {
             "summary": "(interactive session — see workspace for changes)",
-            "files_written": new_and_changed,
+            "files_written": changes["all_changed"],
         }
         return result, []
 
@@ -393,18 +394,3 @@ class InteractiveRunner:
             )
             return {fallback_key: raw, "_interactive_parse_error": str(e)}
 
-
-# ---------------------------------------------------------------------------
-# Workspace snapshot helper
-# ---------------------------------------------------------------------------
-
-def _snapshot(workspace: Path) -> list[str]:
-    """Return sorted list of relative file paths in workspace (ignoring caches)."""
-    if not workspace.exists():
-        return []
-    ignored = {"__pycache__", ".pytest_cache", "node_modules", ".mypy_cache", "dist", "build"}
-    files = []
-    for p in workspace.rglob("*"):
-        if p.is_file() and not any(part in ignored for part in p.parts):
-            files.append(str(p.relative_to(workspace)).replace("\\", "/"))
-    return sorted(files)
