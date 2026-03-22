@@ -1,0 +1,84 @@
+{
+  "version": "1.0.0",
+  "description": "Self-improving software development pipeline",
+  "models": {
+    "agent": "claude-sonnet-4-6",
+    "postmortem": "claude-opus-4-6"
+  },
+  "execution": {
+    "max_iterations_per_agent": 50,
+    "tdd_green_max_attempts": 5,
+    "agent_max_tokens": 8192,
+    "postmortem_max_tokens": 16000
+  },
+  "steps": [
+    {
+      "id": "requirements",
+      "name": "Requirements Generation",
+      "description": "Analyze the feature request and produce a detailed requirements specification with acceptance criteria",
+      "agent_prompt": "01_requirements.md",
+      "model": "agent",
+      "writes_code": false,
+      "optional": false
+    },
+    {
+      "id": "plan",
+      "name": "Implementation Plan",
+      "description": "Create a detailed implementation plan including file structure, interfaces, and dependencies",
+      "agent_prompt": "02_plan.md",
+      "model": "agent",
+      "writes_code": false,
+      "optional": false
+    },
+    {
+      "id": "tdd_red",
+      "name": "TDD Red Phase",
+      "description": "Write comprehensive failing tests that cover all acceptance criteria",
+      "agent_prompt": "03_tdd_red.md",
+      "model": "agent",
+      "writes_code": true,
+      "verify_fails": true,
+      "optional": false
+    },
+    {
+      "id": "tdd_green",
+      "name": "TDD Green + Implementation",
+      "description": "Implement the code to make all tests pass, ensuring compilation and test success",
+      "agent_prompt": "04_tdd_green.md",
+      "model": "agent",
+      "writes_code": true,
+      "verify_passes": true,
+      "max_attempts": 5,
+      "optional": false
+    },
+    {
+      "id": "verification",
+      "name": "Requirements Verification",
+      "description": "Verify that every acceptance criterion is genuinely satisfied by the implementation",
+      "agent_prompt": "05_verification.md",
+      "model": "agent",
+      "writes_code": false,
+      "optional": false
+    },
+    {
+      "id": "integration",
+      "name": "Integration Tests",
+      "description": "Write and execute end-to-end integration tests that verify the system works as a whole",
+      "agent_prompt": "06_integration.md",
+      "model": "agent",
+      "writes_code": true,
+      "run_integration": true,
+      "optional": true
+    },
+    {
+      "id": "postmortem",
+      "name": "Post-mortem Analysis",
+      "description": "Analyze the full pipeline run and propose concrete improvements to the pipeline itself",
+      "agent_prompt": "07_postmortem.md",
+      "model": "postmortem",
+      "writes_code": false,
+      "is_postmortem": true,
+      "optional": true
+    }
+  ]
+}

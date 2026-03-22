@@ -1,0 +1,56 @@
+{
+  "python": {
+    "file_extension": ".py",
+    "test_framework": "pytest",
+    "test_command": ["python", "-m", "pytest", "-v", "--tb=short", "--no-header"],
+    "integration_test_command": ["python", "-m", "pytest", "-v", "--tb=short", "--no-header", "tests/integration/"],
+    "type_check_command": ["python", "-m", "mypy", "src/", "--ignore-missing-imports", "--no-error-summary"],
+    "install_command": ["pip", "install", "-r", "requirements.txt", "-q"],
+    "test_file_pattern": "test_*.py",
+    "test_dirs": ["tests/", "tests/unit/", "tests/integration/"],
+    "source_dirs": ["src/"],
+    "init_files": {
+      "requirements.txt": "",
+      "src/__init__.py": "",
+      "tests/__init__.py": "",
+      "tests/unit/__init__.py": "",
+      "tests/integration/__init__.py": ""
+    },
+    "compile_check": "mypy",
+    "notes": "Use pytest for all tests. Source code goes in src/. Unit tests in tests/unit/. Integration tests in tests/integration/."
+  },
+  "typescript": {
+    "file_extension": ".ts",
+    "test_framework": "jest",
+    "test_command": ["npx", "jest", "--verbose", "--passWithNoTests"],
+    "integration_test_command": ["npx", "jest", "--verbose", "--testPathPattern=integration"],
+    "type_check_command": ["npx", "tsc", "--noEmit"],
+    "install_command": ["npm", "install"],
+    "test_file_pattern": "*.test.ts",
+    "test_dirs": ["src/__tests__/", "tests/"],
+    "source_dirs": ["src/"],
+    "init_files": {
+      "package.json": "{\n  \"name\": \"workspace\",\n  \"version\": \"1.0.0\",\n  \"scripts\": {\n    \"test\": \"jest\",\n    \"build\": \"tsc\",\n    \"typecheck\": \"tsc --noEmit\"\n  },\n  \"devDependencies\": {\n    \"@types/jest\": \"^29.0.0\",\n    \"@types/node\": \"^20.0.0\",\n    \"jest\": \"^29.0.0\",\n    \"ts-jest\": \"^29.0.0\",\n    \"typescript\": \"^5.0.0\"\n  }\n}",
+      "tsconfig.json": "{\n  \"compilerOptions\": {\n    \"target\": \"ES2020\",\n    \"module\": \"commonjs\",\n    \"lib\": [\"ES2020\"],\n    \"strict\": true,\n    \"esModuleInterop\": true,\n    \"outDir\": \"./dist\",\n    \"rootDir\": \"./src\"\n  },\n  \"include\": [\"src/**/*\"],\n  \"exclude\": [\"node_modules\", \"dist\"]\n}",
+      "jest.config.js": "module.exports = {\n  preset: 'ts-jest',\n  testEnvironment: 'node',\n  testMatch: ['**/*.test.ts'],\n  collectCoverageFrom: ['src/**/*.ts', '!src/**/*.d.ts']\n};"
+    },
+    "compile_check": "tsc",
+    "notes": "Use Jest with ts-jest for all tests. Source code goes in src/. Tests in src/__tests__/ or alongside source files as *.test.ts."
+  },
+  "javascript": {
+    "file_extension": ".js",
+    "test_framework": "jest",
+    "test_command": ["npx", "jest", "--verbose", "--passWithNoTests"],
+    "integration_test_command": ["npx", "jest", "--verbose", "--testPathPattern=integration"],
+    "type_check_command": null,
+    "install_command": ["npm", "install"],
+    "test_file_pattern": "*.test.js",
+    "test_dirs": ["tests/", "__tests__/"],
+    "source_dirs": ["src/"],
+    "init_files": {
+      "package.json": "{\n  \"name\": \"workspace\",\n  \"version\": \"1.0.0\",\n  \"scripts\": {\n    \"test\": \"jest\"\n  },\n  \"devDependencies\": {\n    \"jest\": \"^29.0.0\"\n  }\n}"
+    },
+    "compile_check": null,
+    "notes": "Use Jest for all tests. Source code goes in src/. Tests in tests/ or alongside source as *.test.js."
+  }
+}
