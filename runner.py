@@ -7,6 +7,8 @@ Usage:
     python runner.py "Build a REST API for todo items" --language typescript
     python runner.py --resume 2026-03-22T143000        # Resume an interrupted run
     python runner.py --skip-postmortem "..."            # Skip post-mortem analysis
+    python runner.py --mode claude_code "..."           # Use Claude Code CLI for all steps
+    python runner.py --check-cli                        # Verify Claude Code CLI is available
 """
 
 import argparse
@@ -24,6 +26,7 @@ from rich.table import Table
 sys.path.insert(0, str(Path(__file__).parent))
 
 from utils.agent import AgentRunner
+from utils.claude_code_runner import ClaudeCodeRunner
 from utils.context import ContextBuilder
 from utils.executor import WorkspaceExecutor
 from utils.logger import StepLogger
@@ -48,6 +51,7 @@ class PipelineRunner:
         language: str = "python",
         resume_run_id: str | None = None,
         skip_postmortem: bool = False,
+        mode_override: str | None = None,
     ):
         self.client = anthropic.Anthropic()
         self.feature_request = feature_request
@@ -56,6 +60,20 @@ class PipelineRunner:
 
         self.pipeline = self._load_json("pipeline.json")
         self.languages = self._load_json("languages.json")
+
+        # Execution mode: CLI flag > pipeline.json default
+        self.global_mode = mode_override or self.pipeline.get("execution_mode", "api")
+        self._cc_config = self.pipeline.get("claude_code", {})
+
+        # Validate claude_code mode availability up front
+        if self.global_mode == "claude_code" or any(
+            s.get("execution_mode") == "claude_code" for s in self.pipeline.get("steps", [])
+        ):
+            ok, msg = ClaudeCodeRunner.check_available(self._cc_config.get("command", "claude"))
+            if not ok:
+                console.print(f"[bold red]Claude Code CLI unavailable:[/bold red] {msg}")
+                sys.exit(1)
+            console.print(f"[dim]{msg}[/dim]")
 
         if resume_run_id:
             self.run_id = resume_run_id
@@ -80,6 +98,7 @@ class PipelineRunner:
         self.executor = WorkspaceExecutor(self.workspace, self.language, self.languages)
         self.logger = StepLogger(self.run_dir)
         self.agent_runner = AgentRunner(self.client, AGENTS_DIR)
+        self.cc_runner = ClaudeCodeRunner(self._cc_config)
 
         PROPOSALS_DIR.mkdir(exist_ok=True)
 
@@ -104,6 +123,7 @@ class PipelineRunner:
                 f"[bold cyan]Run ID:[/bold cyan] {self.run_id}\n"
                 f"[bold cyan]Feature:[/bold cyan] {self.feature_request[:120]}\n"
                 f"[bold cyan]Language:[/bold cyan] {self.language}\n"
+                f"[bold cyan]Execution Mode:[/bold cyan] {self.global_mode}\n"
                 f"[bold cyan]Workspace:[/bold cyan] {self.workspace}",
                 title="[bold green]Self-Improving Development Pipeline[/bold green]",
                 border_style="green",
@@ -186,6 +206,14 @@ class PipelineRunner:
     # Step dispatch
     # ------------------------------------------------------------------
 
+    def _step_mode(self, step: dict) -> str:
+        """Return the execution mode for a step: 'api' or 'claude_code'."""
+        return step.get("execution_mode") or self.global_mode
+
+    def _runner(self, step: dict):
+        """Return the appropriate runner (AgentRunner or ClaudeCodeRunner) for a step."""
+        return self.cc_runner if self._step_mode(step) == "claude_code" else self.agent_runner
+
     def _run_step(self, step: dict) -> dict:
         model_key = step.get("model", "agent")
         model = self.pipeline["models"][model_key]
@@ -197,19 +225,24 @@ class PipelineRunner:
 
         system_prompt = self._load_agent_prompt(step)
         user_message = self._build_context_message(step)
+        runner = self._runner(step)
+        mode = self._step_mode(step)
+
+        if mode != "api":
+            console.print(f"  [dim]Mode: {mode}[/dim]")
 
         if step.get("is_postmortem"):
-            return self._run_postmortem_step(step, system_prompt, model, user_message, max_tokens)
+            return self._run_postmortem_step(step, system_prompt, model, user_message, max_tokens, runner)
 
         if step.get("writes_code"):
             if step.get("verify_fails"):
-                return self._run_tdd_red(step, system_prompt, model, user_message, max_tokens)
+                return self._run_tdd_red(step, system_prompt, model, user_message, max_tokens, runner)
             elif step.get("verify_passes"):
-                return self._run_tdd_green(step, system_prompt, model, user_message, max_tokens)
+                return self._run_tdd_green(step, system_prompt, model, user_message, max_tokens, runner)
             elif step.get("run_integration"):
-                return self._run_integration(step, system_prompt, model, user_message, max_tokens)
+                return self._run_integration(step, system_prompt, model, user_message, max_tokens, runner)
             else:
-                output = self.agent_runner.run_with_files(
+                output = runner.run_with_files(
                     system_prompt=system_prompt,
                     user_message=user_message,
                     model=model,
@@ -219,7 +252,7 @@ class PipelineRunner:
                 )
                 return {"status": "success", "output": output}
         else:
-            output = self.agent_runner.run_structured(
+            output = runner.run_structured(
                 system_prompt=system_prompt,
                 user_message=user_message,
                 model=model,
@@ -233,8 +266,8 @@ class PipelineRunner:
     # TDD Red
     # ------------------------------------------------------------------
 
-    def _run_tdd_red(self, step, system_prompt, model, user_message, max_tokens) -> dict:
-        output = self.agent_runner.run_with_files(
+    def _run_tdd_red(self, step, system_prompt, model, user_message, max_tokens, runner) -> dict:
+        output = runner.run_with_files(
             system_prompt=system_prompt,
             user_message=user_message,
             model=model,
@@ -273,7 +306,7 @@ class PipelineRunner:
     # TDD Green
     # ------------------------------------------------------------------
 
-    def _run_tdd_green(self, step, system_prompt, model, user_message, max_tokens) -> dict:
+    def _run_tdd_green(self, step, system_prompt, model, user_message, max_tokens, runner) -> dict:
         max_attempts = step.get(
             "max_attempts", self.pipeline["execution"]["tdd_green_max_attempts"]
         )
@@ -291,7 +324,6 @@ class PipelineRunner:
             console.print(f"  [dim]Attempt {attempt}/{max_attempts}[/dim]")
 
             if attempt == 1:
-                # First attempt: include test output in the user message
                 augmented_message = (
                     user_message
                     + f"\n\n## Current Test Output (All Failing)\n\n```\n{test_result['formatted_output']}\n```"
@@ -310,7 +342,7 @@ class PipelineRunner:
                     f"- Fix the root cause, not symptoms"
                 )
 
-            output, messages = self.agent_runner.run_with_files_stateful(
+            output, messages = runner.run_with_files_stateful(
                 system_prompt=system_prompt,
                 user_message=augmented_message,
                 retry_message=retry_msg,
@@ -379,8 +411,8 @@ class PipelineRunner:
     # Integration Tests
     # ------------------------------------------------------------------
 
-    def _run_integration(self, step, system_prompt, model, user_message, max_tokens) -> dict:
-        output, _ = self.agent_runner.run_with_files_stateful(
+    def _run_integration(self, step, system_prompt, model, user_message, max_tokens, runner) -> dict:
+        output, _ = runner.run_with_files_stateful(
             system_prompt=system_prompt,
             user_message=user_message,
             retry_message=None,
@@ -414,10 +446,10 @@ class PipelineRunner:
     # Post-mortem
     # ------------------------------------------------------------------
 
-    def _run_postmortem_step(self, step, system_prompt, model, user_message, max_tokens) -> dict:
+    def _run_postmortem_step(self, step, system_prompt, model, user_message, max_tokens, runner) -> dict:
         console.print("  [dim]Running Opus post-mortem analysis...[/dim]")
 
-        result = self.agent_runner.run_postmortem(
+        result = runner.run_postmortem(
             system_prompt=system_prompt,
             user_message=user_message,
             model=model,
@@ -570,8 +602,33 @@ def main():
         action="store_true",
         help="List all previous runs",
     )
+    parser.add_argument(
+        "--mode",
+        "-m",
+        choices=["api", "claude_code"],
+        default=None,
+        help=(
+            "Override execution mode for all steps. "
+            "'api' uses the Anthropic SDK directly (default). "
+            "'claude_code' uses the Claude Code CLI as a subprocess. "
+            "Can also be set per-step in pipeline.json."
+        ),
+    )
+    parser.add_argument(
+        "--check-cli",
+        action="store_true",
+        help="Check whether the Claude Code CLI is installed and available",
+    )
 
     args = parser.parse_args()
+
+    if args.check_cli:
+        pipeline = json.loads((BASE_DIR / "pipeline.json").read_text())
+        cmd = pipeline.get("claude_code", {}).get("command", "claude")
+        ok, msg = ClaudeCodeRunner.check_available(cmd)
+        symbol = "[green]✓[/green]" if ok else "[red]✗[/red]"
+        console.print(f"{symbol} {msg}")
+        sys.exit(0 if ok else 1)
 
     if args.list_runs:
         _list_runs()
@@ -588,6 +645,7 @@ def main():
         language=args.language,
         resume_run_id=args.resume,
         skip_postmortem=args.skip_postmortem,
+        mode_override=args.mode,
     )
     runner.run()
 

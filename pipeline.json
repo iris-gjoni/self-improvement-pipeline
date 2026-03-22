@@ -1,5 +1,5 @@
 {
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Self-improving software development pipeline",
   "models": {
     "agent": "claude-sonnet-4-6",
@@ -10,6 +10,18 @@
     "tdd_green_max_attempts": 5,
     "agent_max_tokens": 8192,
     "postmortem_max_tokens": 16000
+  },
+  "execution_mode": "api",
+  "_execution_mode_comment": "Global default: 'api' (Anthropic SDK) or 'claude_code' (Claude Code CLI). Override per-step with 'execution_mode' on any step.",
+  "claude_code": {
+    "command": "claude",
+    "_command_comment": "The CLI command to invoke. Change to full path if 'claude' is not on PATH.",
+    "timeout_seconds": 600,
+    "_timeout_comment": "Per-invocation timeout. Code-writing steps may need longer (up to 600s).",
+    "code_tools": "Write,Edit,Read,Bash,Glob,Grep",
+    "_code_tools_comment": "Tools available to code-writing steps in claude_code mode.",
+    "read_only_tools": "Read,Glob,Grep",
+    "_read_only_tools_comment": "Tools available to structured-output steps in claude_code mode."
   },
   "steps": [
     {

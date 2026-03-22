@@ -62,11 +62,20 @@ export ANTHROPIC_API_KEY=sk-ant-...
 ### Run the pipeline
 
 ```bash
-# Basic usage
+# Basic usage (API mode, Python)
 python runner.py "Add user authentication with JWT tokens"
 
 # Specify language
 python runner.py "Build a REST API for todo items" --language typescript
+
+# Use Claude Code CLI for all steps
+python runner.py "Add input validation" --mode claude_code
+
+# Use Claude Code CLI only for specific steps (set in pipeline.json)
+# See docs/execution-modes.md for per-step config
+
+# Check Claude Code CLI is available
+python runner.py --check-cli
 
 # Skip post-mortem (faster, no proposals generated)
 python runner.py "Add input validation" --skip-postmortem
@@ -221,6 +230,20 @@ Controls how code is compiled and tested for each language. Supports `python`, `
 3. Restart the pipeline
 
 The self-improvement process can also do this automatically via proposals.
+
+## Documentation
+
+Detailed documentation is in `docs/`:
+
+| File | Contents |
+|------|----------|
+| [`docs/architecture.md`](docs/architecture.md) | System design, components, data flow, design decisions |
+| [`docs/pipeline-steps.md`](docs/pipeline-steps.md) | What each step does, inputs/outputs, quality signals, failure modes |
+| [`docs/agent-prompts.md`](docs/agent-prompts.md) | How prompts work, tool sets, template variables, writing guidelines |
+| [`docs/execution-modes.md`](docs/execution-modes.md) | API mode vs Claude Code CLI mode — trade-offs, config, per-step overrides |
+| [`docs/self-improvement.md`](docs/self-improvement.md) | The improvement loop in detail — proposals, apply_proposal.py, git history |
+| [`docs/adding-a-step.md`](docs/adding-a-step.md) | Step-by-step guide to adding a new pipeline step |
+| [`docs/workspace-execution.md`](docs/workspace-execution.md) | Code execution, language support, adding a new language |
 
 ## Models Used
 
